@@ -1,0 +1,68 @@
+services:
+  db:
+    image: postgres:17
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-ecoconecta}
+      POSTGRES_USER: ${POSTGRES_USER:-ecoconecta}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Defina POSTGRES_PASSWORD en .env}
+      TZ: UTC
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    # Docker no publica puertos de un contenedor conectado solo a redes internas.
+    networks: [database, development]
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"']
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+  adminer:
+    image: adminer:6.3.0
+    profiles: [tools]
+    restart: unless-stopped
+    environment:
+      ADMINER_DEFAULT_SERVER: db
+    ports:
+      - "127.0.0.1:${ADMINER_PORT:-8080}:8080"
+    networks: [database, development]
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: [CMD, php, -r, "exit(@file_get_contents('http://127.0.0.1:8080/') === false ? 1 : 0);"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+  api:
+    build: .
+    profiles: [app]
+    restart: unless-stopped
+    environment:
+      PGHOST: db
+      PGPORT: 5432
+      PGDATABASE: ${POSTGRES_DB:-ecoconecta}
+      PGUSER: ${DB_APP_USER:-ecoconecta_app}
+      PGPASSWORD: ${DB_APP_PASSWORD:-}
+      AUTH_SECRET: ${AUTH_SECRET:-}
+      TOKEN_MINUTES: ${TOKEN_MINUTES:-30}
+    ports: ["127.0.0.1:8000:8000"]
+    networks: [database, outbound]
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+volumes:
+  postgres_data:
+networks:
+  database:
+    internal: true
+  development:
+  outbound:
