@@ -65,6 +65,22 @@ En Windows, en los siguientes comandos `python` significa `.\.venv\Scripts\pytho
 
 API: <http://127.0.0.1:8000/docs>. Salud: <http://127.0.0.1:8000/health>. El healthcheck verifica una consulta real a PostgreSQL. El resto de rutas requiere token salvo login. No hay CORS abierto: el panel debe utilizar un proxy de desarrollo al mismo origen o configurar con Breiner una lista explícita de orígenes.
 
+## Frontend y API
+
+El frontend se puede ejecutar junto a la API mediante el perfil `app`:
+
+```bash
+docker compose --profile app up -d --build --wait api web
+```
+
+- Frontend: <http://127.0.0.1:5173>
+- API: <http://127.0.0.1:8000>
+- Las llamadas `/api/*` del frontend pasan por Nginx/Vite a FastAPI.
+- Login real: `POST /auth/token`; el JWT se conserva solo en `sessionStorage`.
+
+Para desarrollo sin Docker, inicia FastAPI en `8000` y Vite en `5173`; `vite.config.ts` hace el proxy `/api`.
+En plataforma separada, define `VITE_API_URL=https://api.dominio.com` al compilar y agrega ese origen exacto a `CORS_ORIGINS`. En el despliegue detrás de un dominio común se recomienda mantener `/api` y no exponer PostgreSQL.
+
 ### Variables
 
 | Variable | Uso |

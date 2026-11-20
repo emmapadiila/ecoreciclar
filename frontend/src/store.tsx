@@ -7,6 +7,7 @@ import {
 } from "react";
 import { seed } from "./data";
 import type { Actor, State } from "./model";
+import { clearApiToken } from "./services";
 
 const key = "ecoconecta360-demo-v1";
 const sessionKey = "ecoconecta360-profile";
@@ -55,7 +56,10 @@ export function DemoProvider({ children }: { children: ReactNode }) {
   }
   function login(next: Actor | null) {
     if (next) sessionStorage.setItem(sessionKey, JSON.stringify(next));
-    else sessionStorage.removeItem(sessionKey);
+    else {
+      sessionStorage.removeItem(sessionKey);
+      clearApiToken();
+    }
     setActor(next);
   }
   function reset() {

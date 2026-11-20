@@ -50,6 +50,12 @@ import {
 } from "./model";
 import { useDemo } from "./store";
 import { createRequest } from "./operations";
+import {
+  apiToken,
+  authService,
+  materialService,
+  solicitudService,
+} from "./services";
 
 const nav = [
   ["Inicio", "/"],
@@ -680,6 +686,27 @@ export function IntakePage() {
               setStep(step + 1);
               return;
             }
+            if (apiToken()) {
+              const materials = await materialService.list();
+              const category = draft.group === "Orgánico" ? "organico" : "reciclable";
+              const material = materials.find(
+                (item: { categoria: string }) => item.categoria === category,
+              );
+              if (!material)
+                throw Error("No hay un material activo para este tipo de residuo.");
+              const created = await solicitudService.create({
+                direccion: draft.address,
+                descripcion: draft.description || draft.notes || draft.classification,
+                horario_preferido: draft.preferred,
+                materiales: [{
+                  material_id: material.id,
+                  estimado_kg: draft.estimate,
+                  confirmado: true,
+                }],
+              });
+              setCode(created.codigo);
+              return;
+            }
             let next = "";
             save((s) => {
               const result = createRequest(s, draft, actor ?? undefined);
@@ -904,10 +931,8 @@ export function Lookup() {
   );
 }
 export function Access() {
-  const { state, login } = useDemo(),
-    navigate = useNavigate(),
-    [role, setRole] = useState<Role>("reciclaje");
-  const accounts = state.people.filter((p) => p.role === role && p.active);
+  const { login } = useDemo(),
+    navigate = useNavigate();
   return (
     <div className="wrap section sign-in">
       <aside>
@@ -921,40 +946,34 @@ export function Access() {
           Soy residente o negocio <ArrowRight size={17} />
         </Link>
       </aside>
-      <Panel title="Perfil de demostración">
-        <p>Entra con una cuenta ficticia para recorrer la aplicación.</p>
+      <Panel title="Acceso con cuenta registrada">
+        <p>Usa el correo autorizado y la contraseña configurada en el servidor.</p>
         <Form
           label="Entrar al panel"
-          onSave={(d) => {
-            const person = accounts.find((p) => p.id === value(d, "account"));
-            if (!person)
-              throw Error("No hay una cuenta activa para este perfil.");
-            login({ id: person.id, role });
+          onSave={async (d) => {
+            await authService.login({
+              correo: value(d, "correo"),
+              password: value(d, "password"),
+            });
+            const person = await authService.me();
+            let role: Role;
+            if (person.rol === "coordinador")
+              role = person.colectivo_tipo === "organico" ? "huerta" : "reciclaje";
+            else if (person.rol === "administrador")
+              role = "admin";
+            else if (person.rol === "recolector")
+              role = "reciclador";
+            else
+              role = person.tipo_generador;
+            login({ id: String(person.id), role });
             navigate("/panel/" + role);
           }}
         >
-          <Field label="Perfil">
-            <select
-              value={role}
-              onChange={(e) => setRole(e.target.value as Role)}
-            >
-              {(Object.keys(roles) as Role[])
-                .filter((r) => !isResident(r))
-                .map((r) => (
-                  <option key={r} value={r}>
-                    {roles[r]}
-                  </option>
-                ))}
-            </select>
+          <Field label="Correo">
+            <input name="correo" type="email" required autoComplete="username" />
           </Field>
-          <Field label="Cuenta">
-            <select name="account" key={role}>
-              {accounts.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name}
-                </option>
-              ))}
-            </select>
+          <Field label="Contraseña">
+            <input name="password" type="password" required autoComplete="current-password" />
           </Field>
         </Form>
       </Panel>
@@ -962,15 +981,13 @@ export function Access() {
   );
 }
 export function Verify() {
-  const { state, actor, login } = useDemo(),
-    navigate = useNavigate(),
-    [role, setRole] = useState<"hogar" | "negocio">("hogar"),
-    [person, setPerson] = useState("");
+  const { actor, login } = useDemo(),
+    navigate = useNavigate();
   return (
     <div className="wrap section narrow">
       <Heading
         title="Mi EcoConecta"
-        text="Verificación simulada para consultar información privada."
+        text="Accede con tu cuenta registrada."
       />
       <Panel>
         <LockKeyhole />
@@ -980,86 +997,25 @@ export function Verify() {
           </Link>
         )}
         <Form
-          key={person}
-          label={
-            person ? "Verificar y entrar" : "Simular código de verificación"
-          }
-          onSave={(d) => {
-            if (person) {
-              if (value(d, "otp") !== "360360")
-                throw Error("El código de demostración es 360360.");
-              if (
-                !state.people.some(
-                  (p) => p.id === person && p.role === role && p.active,
-                )
-              )
-                throw Error("Perfil inactivo.");
-              login({ id: person, role });
-              navigate("/panel/" + role);
-              return;
-            }
-            const p = state.people.find(
-              (p) =>
-                p.phone === normalizePhone(value(d, "phone")) &&
-                p.role === role &&
-                p.active,
-            );
-            if (!p)
-              throw Error(
-                "No hay un perfil activo para este teléfono y tipo de generador.",
-              );
-            setPerson(p.id);
+          label="Entrar"
+          onSave={async (d) => {
+            await authService.login({
+              correo: value(d, "correo"),
+              password: value(d, "password"),
+            });
+            const person = await authService.me();
+            if (person.rol !== "residente")
+              throw Error("Esta entrada es solo para residentes o negocios.");
+            login({ id: String(person.id), role: person.tipo_generador });
+            navigate("/panel/" + person.tipo_generador);
           }}
         >
-          {person ? (
-            <>
-              <p className="hint">
-                Código de demostración <strong>360360</strong>. Aquí se
-                representaría el código enviado por WhatsApp.
-              </p>
-              <Field label="Código de verificación">
-                <input
-                  name="otp"
-                  autoComplete="one-time-code"
-                  inputMode="numeric"
-                  pattern="[0-9]{6}"
-                  required
-                />
-              </Field>
-              <button
-                type="button"
-                className="text-link"
-                onClick={() => setPerson("")}
-              >
-                Cambiar teléfono
-              </button>
-            </>
-          ) : (
-            <>
-              <Field label="Tipo de generador">
-                <select
-                  value={role}
-                  onChange={(e) => setRole(e.target.value as typeof role)}
-                >
-                  <option value="hogar">Hogar</option>
-                  <option value="negocio">Negocio</option>
-                </select>
-              </Field>
-              <Field label="Celular del perfil">
-                <input
-                  key={role}
-                  name="phone"
-                  type="tel"
-                  required
-                  defaultValue={state.people.find((p) => p.id === role)?.phone}
-                />
-              </Field>
-              <small>
-                Puedes usar el teléfono precargado o el de una solicitud creada
-                en esta demo.
-              </small>
-            </>
-          )}
+          <Field label="Correo">
+            <input name="correo" type="email" required autoComplete="username" />
+          </Field>
+          <Field label="Contraseña">
+            <input name="password" type="password" required autoComplete="current-password" />
+          </Field>
         </Form>
       </Panel>
       <Link className="text-link mt-5" to="/solicitar">

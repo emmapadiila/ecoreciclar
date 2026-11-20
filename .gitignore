@@ -16,4 +16,5 @@ uploads/
 *.pem
 *.key
 *.log
+*.tsbuildinfo
 .vscode/

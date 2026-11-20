@@ -1,3 +1,4 @@
+import os
 from contextlib import asynccontextmanager
 from datetime import datetime
 from decimal import Decimal
@@ -5,6 +6,7 @@ from typing import Annotated, Literal
 
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError
@@ -13,7 +15,15 @@ from sqlalchemy.orm import Session
 from backend import services
 from backend.auth import auth_secret, current_user, issue_token, verify_password
 from backend.db import database_url, get_session
-from backend.models import HistorialEstado, Material, MovimientoPuntos, Recoleccion, Usuario
+from backend.models import (
+    Colectivo,
+    CoordinadorColectivo,
+    HistorialEstado,
+    Material,
+    MovimientoPuntos,
+    Recoleccion,
+    Usuario,
+)
 
 
 @asynccontextmanager
@@ -24,6 +34,15 @@ async def lifespan(app):
 
 
 app = FastAPI(title="EcoConecta 360 — API de referencia", lifespan=lifespan)
+cors_origins = [origin.strip() for origin in os.getenv("CORS_ORIGINS", "").split(",") if origin.strip()]
+if cors_origins:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=cors_origins,
+        allow_credentials=True,
+        allow_methods=["GET", "POST", "PATCH", "OPTIONS"],
+        allow_headers=["Authorization", "Content-Type"],
+    )
 DB = Annotated[Session, Depends(get_session)]
 User = Annotated[Usuario, Depends(current_user)]
 
@@ -97,6 +116,30 @@ def login(data: Login, session: DB):
     if not valid or not user or not user.activo or not user.piloto_habilitado:
         raise HTTPException(401, "Credenciales inválidas o piloto no autorizado")
     return {"access_token": issue_token(user.id), "token_type": "bearer"}
+
+
+@app.get("/auth/me")
+def authenticated_user(user: User, session: DB):
+    colectivo_tipo = None
+    if user.rol == "coordinador":
+        colectivo_tipo = session.scalar(
+            select(Colectivo.tipo_flujo)
+            .join(CoordinadorColectivo, CoordinadorColectivo.colectivo_id == Colectivo.id)
+            .where(
+                CoordinadorColectivo.usuario_id == user.id,
+                CoordinadorColectivo.activo,
+                Colectivo.activo,
+            )
+            .limit(1)
+        )
+    return {
+        "id": user.id,
+        "nombre": user.nombre,
+        "correo": user.correo,
+        "rol": user.rol,
+        "tipo_generador": user.tipo_generador,
+        "colectivo_tipo": colectivo_tipo,
+    }
 
 
 @app.get("/materiales")
