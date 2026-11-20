@@ -41,6 +41,19 @@ def count(database, model):
         return session.scalar(select(func.count()).select_from(model))
 
 
+def test_public_daily_results_empty_and_invalid_date(client):
+    response = client.get("/public/resultados-diarios?fecha=1900-01-01")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["fecha"] == "1900-01-01"
+    assert all(Decimal(str(data[key])) == 0 for key in (
+        "total_kg", "reciclables_kg", "organicos_kg", "recolecciones_confirmadas",
+        "hogares_participantes", "negocios_participantes",
+    ))
+    assert data["ultima_actualizacion"] is None
+    assert client.get("/public/resultados-diarios?fecha=fecha-invalida").status_code == 422
+
+
 def test_collectors_are_restricted_to_coordinator_collective(database, client, headers):
     recycling_id, recycling_collector, _, _ = ids(database, "reciclable")
     organic_id, organic_collector, _, _ = ids(database, "organico")
@@ -60,6 +73,7 @@ def test_collectors_are_restricted_to_coordinator_collective(database, client, h
 @pytest.mark.parametrize("flow,suffix,expected", [("reciclable", "reciclaje", "50.00"), ("organico", "huerta", "25.00")])
 def test_complete_api_flow(database, client, headers, flow, suffix, expected):
     approve(database)
+    before = client.get("/public/resultados-diarios").json()
     cid, collector, material, _ = ids(database, flow)
     resident = headers[f"residente.{suffix}@example.invalid"]
     coordinator = headers[f"coordinador.{suffix}@example.invalid"]
@@ -78,6 +92,12 @@ def test_complete_api_flow(database, client, headers, flow, suffix, expected):
     response = client.post(f"/solicitudes/{sid}/cierre", headers=coordinator, json={"peso_real_kg": "5.00"})
     assert response.status_code == 200, response.text
     assert response.json()["puntos"] == expected  # Peso confirmado, no estimado.
+    daily = client.get("/public/resultados-diarios?fecha=" + before["fecha"]).json()
+    assert Decimal(str(daily["total_kg"])) == Decimal(str(before["total_kg"])) + Decimal("5")
+    key = "reciclables_kg" if flow == "reciclable" else "organicos_kg"
+    assert Decimal(str(daily[key])) == Decimal(str(before[key])) + Decimal("5")
+    assert daily["recolecciones_confirmadas"] == before["recolecciones_confirmadas"] + 1
+    assert set(daily) == {"fecha", "total_kg", "reciclables_kg", "organicos_kg", "recolecciones_confirmadas", "hogares_participantes", "negocios_participantes", "ultima_actualizacion"}
     assert client.post(f"/solicitudes/{sid}/cierre", headers=coordinator, json={"peso_real_kg": "5"}).status_code == 409
     assert client.get("/mi-cuenta/puntos", headers=resident).json()["puntos"] == expected
     history = client.get(f"/solicitudes/{sid}/historial", headers=coordinator).json()

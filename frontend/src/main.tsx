@@ -30,8 +30,6 @@ import {
 } from "lucide-react";
 import {
   Access,
-  Assistant,
-  Classify,
   Education,
   IntakePage,
   Landing,
@@ -43,6 +41,7 @@ import { DemoProvider, useDemo } from "./store";
 import { Brand, Heading } from "./ui";
 import { Calendar, Profile, RequestDetail, RequestList } from "./requests";
 import { Impact, Notifications, Overview, Points } from "./impact";
+import { DailyResults } from "./daily-results";
 import { Audit, Content, People, Rules, Settings } from "./admin";
 import {
   isCollector,
@@ -403,8 +402,7 @@ function App() {
         <Route path="/panel/:role/*" element={<PanelRoutes />} />
         <Route element={<PublicLayout />}>
           <Route index element={<Landing />} />
-          <Route path="asistente" element={<Assistant />} />
-          <Route path="clasificar" element={<Classify />} />
+          <Route path="resultados-diarios" element={<DailyResults />} />
           <Route path="educacion" element={<Education />} />
           <Route path="solicitar" element={<IntakePage />} />
           <Route path="consultar" element={<Lookup />} />

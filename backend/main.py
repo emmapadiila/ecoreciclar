@@ -1,8 +1,9 @@
 import os
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Annotated, Literal
+from zoneinfo import ZoneInfo
 
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.responses import JSONResponse
@@ -108,6 +109,14 @@ def request_output(item):
 def health(session: DB):
     session.execute(text("SELECT 1"))
     return {"status": "ok"}
+
+
+@app.get("/public/resultados-diarios")
+def public_daily_results(session: DB, fecha: date | None = None):
+    day = fecha or datetime.now(ZoneInfo("America/Bogota")).date()
+    if day == date.max:
+        raise HTTPException(422, "Fecha fuera del rango admitido")
+    return services.daily_results(session, day)
 
 
 @app.post("/auth/token")

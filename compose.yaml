@@ -40,6 +40,8 @@ services:
   web:
     build:
       context: ./frontend
+      args:
+        VITE_WHATSAPP_NUMBER: ${VITE_WHATSAPP_NUMBER:-}
     profiles: [app]
     restart: unless-stopped
     ports: ["127.0.0.1:${WEB_PORT:-5173}:80"]

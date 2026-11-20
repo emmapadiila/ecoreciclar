@@ -1,5 +1,11 @@
 # EcoConecta 360
 
+### WhatsApp y resultados diarios
+
+Configura `VITE_WHATSAPP_NUMBER` en `frontend/.env` con el número oficial en formato internacional, sin `+` ni espacios. Si no se configura, los botones permanecen deshabilitados. El texto precargado se abre en WhatsApp; este enlace no envía mensajes automáticamente. Reinicia Vite después de cambiar la variable. Con Docker Compose, configura la misma variable en el `.env` de la raíz y reconstruye la imagen web (`docker compose --profile app up -d --build web`): Vite incorpora la variable durante la compilación.
+
+`/resultados-diarios` consulta `GET /api/public/resultados-diarios?fecha=AAAA-MM-DD`; el proxy elimina `/api` antes de enviar la petición a FastAPI. Se requieren FastAPI y PostgreSQL en ejecución. Los totales reflejan exclusivamente los datos de la base conectada: si contiene datos de prueba, el reporte también los mostrará. No se emplean datos locales como respaldo si la API falla.
+
 Frontend de demostración para conectar a la comunidad de Villas de San Pablo con los colectivos de recolección de residuos orgánicos y reciclables.
 
 ## Requisitos

@@ -366,36 +366,20 @@ td small {
   background: #dff2e3;
   color: #116c3c;
 }
-.band {
-  background: #eaf3e7;
-}
-.band h2 {
-  margin-bottom: 20px;
-}
-.category,
 .point-promo,
 .choice {
   background: white;
   border-radius: 14px;
   padding: 24px;
 }
-.category {
-  display: block;
-  border: 1px solid #dbe8da;
-}
-.category:hover,
 .choice:hover,
 .choice.selected {
   background: #e8f7ed;
   border-color: #16834a;
 }
-.category > svg:first-child,
 .split > div > svg {
   color: #16834a;
   margin-bottom: 14px;
-}
-.category > svg:last-child {
-  margin-top: 14px;
 }
 .split {
   align-items: start;
@@ -1441,7 +1425,6 @@ dialog .line {
   gap: 20px;
 }
 .step-grid > div,
-.category,
 .choice {
   background: #fff;
   border: 1px solid #e7efe8;
@@ -1453,24 +1436,12 @@ dialog .line {
   color: #7ca487;
   margin-top: 18px;
 }
-.step-grid h3,
-.category h3 {
+.step-grid h3 {
   font-size: 16px;
   margin: 10px 0;
 }
-.step-grid p,
-.category p {
+.step-grid p {
   font-size: 13px;
-}
-.band {
-  background: #edf6eb;
-}
-.category {
-  display: block;
-  color: #16834a;
-}
-.category p {
-  color: #708277;
 }
 .split {
   display: grid;
@@ -2401,4 +2372,29 @@ button {
 .brand,
 .shell .sidebar .brand {
   background: transparent;
+}
+
+.whatsapp-pending { display: inline-flex; flex-direction: column; gap: 5px; align-items: flex-start; }
+.whatsapp-pending small { font-size: 12px; line-height: 1.4; }
+.topnav .whatsapp-pending { color: #fff; }
+.daily-filter { display: flex; align-items: end; gap: 24px; flex-wrap: wrap; margin-bottom: 24px; }
+.daily-filter .field { width: min(100%, 250px); }
+.daily-filter p, .daily-update { font-size: 13px; margin: 0 0 10px; }
+.daily-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 14px; margin: 20px 0; }
+.daily-card { display: flex; flex-direction: column; gap: 10px; border: 1px solid #dfe8e1; border-radius: 12px; background: #fff; padding: 20px; }
+.daily-card svg { color: #168a2e; }
+.daily-card span { color: #52645a; font-size: 13px; }
+.daily-card strong { color: #063b2e; font: 700 24px var(--font-heading); }
+.daily-comparison { display: grid; gap: 18px; margin-top: 22px; }
+.daily-comparison > div > div:first-child { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
+.daily-track { background: #e6eee8; height: 10px; border-radius: 10px; overflow: hidden; }
+.daily-track span { display: block; height: 100%; background: #168a2e; border-radius: 10px; }
+.daily-comparison > div:nth-child(2) .daily-track span { background: #65a90a; }
+@media (max-width: 760px) {
+  .topnav nav .whatsapp-pending, .hero-grid .whatsapp-pending { width: 100%; align-items: stretch; }
+  .topnav nav .whatsapp-pending button, .hero-grid .whatsapp-pending button, .topnav nav > .btn { width: 100%; min-height: 48px; }
+  .topnav nav > .btn { background: #fff; color: #063b2e; }
+  .daily-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+  .daily-card { padding: 15px; }
+  .daily-card strong { font-size: 20px; }
 }

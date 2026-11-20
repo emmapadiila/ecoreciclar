@@ -1,9 +1,10 @@
-from datetime import datetime, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal, ROUND_HALF_UP
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 from fastapi import HTTPException
-from sqlalchemy import func, select, text
+from sqlalchemy import case, distinct, func, select, text
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
@@ -17,6 +18,29 @@ from backend.models import (
 def set_actor(session: Session, user_id: int, observation: str = ""):
     session.execute(text("SELECT set_config('app.actor_id', :actor, true), set_config('app.observacion', :note, true)"),
                     {"actor": str(user_id), "note": observation})
+
+
+def daily_results(session: Session, day: date):
+    zone = ZoneInfo("America/Bogota")
+    start = datetime.combine(day, time.min, tzinfo=zone)
+    end = start + timedelta(days=1)
+    kg = Recoleccion.peso_real_kg
+    row = session.execute(select(
+        func.coalesce(func.sum(kg), 0),
+        func.coalesce(func.sum(case((Colectivo.tipo_flujo == "reciclable", kg), else_=0)), 0),
+        func.coalesce(func.sum(case((Colectivo.tipo_flujo == "organico", kg), else_=0)), 0),
+        func.count(Recoleccion.id),
+        func.count(distinct(case((Solicitud.tipo_generador == "hogar", Solicitud.usuario_id)))),
+        func.count(distinct(case((Solicitud.tipo_generador == "negocio", Solicitud.usuario_id)))),
+        func.max(Recoleccion.fecha_recoleccion),
+    ).select_from(Recoleccion).join(Solicitud, Solicitud.id == Recoleccion.solicitud_id)
+      .join(Colectivo, Colectivo.id == Solicitud.colectivo_id)
+      .where(Solicitud.estado == "recolectada", Recoleccion.fecha_recoleccion >= start,
+             Recoleccion.fecha_recoleccion < end)).one()
+    return {"fecha": day.isoformat(), "total_kg": row[0], "reciclables_kg": row[1],
+            "organicos_kg": row[2], "recolecciones_confirmadas": row[3],
+            "hogares_participantes": row[4], "negocios_participantes": row[5],
+            "ultima_actualizacion": row[6]}
 
 
 def scoped_requests(user: Usuario):

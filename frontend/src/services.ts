@@ -95,5 +95,10 @@ export const puntosService = { balance: () => request("/usuarios/me/puntos") };
 export const indicadoresService = {
   list: (params?: Query) =>
     request(withQuery("/dashboard/indicadores", params)),
+  daily: (fecha: string) => request<{
+    fecha: string; total_kg: number; reciclables_kg: number; organicos_kg: number;
+    recolecciones_confirmadas: number; hogares_participantes: number;
+    negocios_participantes: number; ultima_actualizacion: string | null;
+  }>(withQuery("/public/resultados-diarios", new URLSearchParams({ fecha }))),
 };
 export const notificacionService = { list: () => request("/notificaciones") };

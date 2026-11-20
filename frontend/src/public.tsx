@@ -12,6 +12,7 @@ import {
   BookOpen,
   CalendarCheck,
   Camera,
+  ClipboardList,
   Coins,
   Leaf,
   LockKeyhole,
@@ -59,12 +60,18 @@ import {
 
 const nav = [
   ["Inicio", "/"],
-  ["Cómo funciona", "/#como-funciona"],
-  ["Clasifica tus residuos", "/clasificar"],
   ["Educación ambiental", "/educacion"],
-  ["Nuestro impacto", "/#impacto"],
+  ["Resultados diarios", "/resultados-diarios"],
   ["Consultar solicitud", "/consultar"],
 ];
+const whatsappNumber = (import.meta.env.VITE_WHATSAPP_NUMBER ?? "").trim();
+const whatsappUrl = /^[1-9]\d{7,14}$/.test(whatsappNumber)
+  ? `https://wa.me/${whatsappNumber}?text=${encodeURIComponent("Hola, EcoConecta. Quiero solicitar una recolección de residuos.")}`
+  : null;
+function WhatsAppLink({ children, onClick }: { children: React.ReactNode; onClick?: () => void }) {
+  return whatsappUrl ? <a className="btn primary" href={whatsappUrl} target="_blank" rel="noopener noreferrer" onClick={onClick}>{children}</a>
+    : <span className="whatsapp-pending"><button className="btn primary" type="button" disabled>{children}</button><small>WhatsApp pendiente de configuración</small></span>;
+}
 export function PublicLayout() {
   const [open, setOpen] = useState(false),
     location = useLocation();
@@ -82,7 +89,7 @@ export function PublicLayout() {
           <Brand />
           <button
             className="icon-button mobile-menu"
-            aria-label="Menú"
+            aria-label={open ? "Cerrar menú" : "Abrir menú"}
             aria-expanded={open}
             aria-controls="public-nav"
             onClick={() => setOpen(!open)}
@@ -99,13 +106,7 @@ export function PublicLayout() {
                 {label}
               </Link>
             ))}
-            <Link
-              className="btn primary"
-              to="/asistente"
-              onClick={() => setOpen(false)}
-            >
-              <MessageCircle size={17} /> WhatsApp
-            </Link>
+            <WhatsAppLink onClick={() => setOpen(false)}><MessageCircle size={17} /> Solicitar por WhatsApp</WhatsAppLink>
           </nav>
         </div>
       </header>
@@ -123,7 +124,7 @@ export function PublicLayout() {
             <strong>Comunidad</strong>
             <Link to="/educacion">Educación ambiental</Link>
             <Link to="/verificar">Mi EcoConecta</Link>
-            <Link to="/solicitar">Solicitud manual</Link>
+            <WhatsAppLink>Solicitar por WhatsApp</WhatsAppLink>
           </div>
           <div>
             <strong>Operación</strong>
@@ -137,21 +138,12 @@ export function PublicLayout() {
   );
 }
 const steps = [
-  [
-    Camera,
-    "Identifica tus residuos",
-    "Usa una foto de ejemplo en el asistente o encuentra tu material en la guía.",
-  ],
-  [
-    MessageCircle,
-    "Solicita la recolección",
-    "Usa el asistente o registra una solicitud manual con tu horario preferido.",
-  ],
-  [
-    CalendarCheck,
-    "Entrega y gana EcoPuntos",
-    "Tu colectivo coordina la entrega. Consulta tus puntos después del pesaje.",
-  ],
+  [MessageCircle, "Escribe por WhatsApp", "Contacta a EcoConecta para comenzar."],
+  [Camera, "Comparte tus residuos", "Envía una fotografía o describe los materiales."],
+  [Sprout, "Recibe orientación", "La IA te orientará sobre tus residuos."],
+  [ClipboardList, "Confirma tu solicitud", "Comparte los datos necesarios para la recolección."],
+  [CalendarCheck, "Espera la programación", "El coordinador organizará la recolección."],
+  [Coins, "Entrega y suma EcoPuntos", "Los puntos se acreditan cuando se confirma el pesaje."],
 ] as const;
 const categories = [
   [Sprout, "Orgánico", "Cáscaras y restos vegetales aptos para huerta."],
@@ -180,9 +172,9 @@ export function Landing() {
               contribuye a construir una Villas de San Pablo más sostenible.
             </p>
             <div className="actions">
-              <Link className="btn primary" to="/asistente">
+              <WhatsAppLink>
                 <MessageCircle size={19} /> Solicitar recolección
-              </Link>
+              </WhatsAppLink>
               <Link className="btn secondary" to="/#como-funciona">
                 Cómo funciona <ArrowDown size={16} />
               </Link>
@@ -237,21 +229,6 @@ export function Landing() {
               <p>{copy}</p>
             </div>
           ))}
-        </div>
-      </section>
-      <section className="band">
-        <div className="wrap section">
-          <h2>Cada residuo tiene su lugar</h2>
-          <div className="grid-three">
-            {categories.map(([Icon, title, copy]) => (
-              <Link className="category" to="/clasificar" key={title}>
-                <Icon />
-                <h3>{title}</h3>
-                <p>{copy}</p>
-                <ArrowRight size={17} />
-              </Link>
-            ))}
-          </div>
         </div>
       </section>
       <section className="wrap section split">
@@ -326,9 +303,7 @@ export function Landing() {
       </section>
       <section className="wrap section line">
         <h2>¿Listo para tu primera entrega?</h2>
-        <Link className="btn primary" to="/asistente">
-          Abrir asistente <ArrowRight size={17} />
-        </Link>
+        <WhatsAppLink>Solicitar por WhatsApp <ArrowRight size={17} /></WhatsAppLink>
       </section>
     </>
   );
@@ -389,20 +364,6 @@ function Classification({ onSelect }: { onSelect?: (g: Group) => void }) {
         </div>
       )}
     </>
-  );
-}
-export function Classify() {
-  return (
-    <div className="wrap section narrow">
-      <Heading
-        title="Clasifica tus residuos"
-        text="Selecciona la categoría que mejor describa tu material."
-      />
-      <Classification />
-      <Link className="text-link mt-5" to="/asistente">
-        Probar clasificación con foto <ArrowRight size={16} />
-      </Link>
-    </div>
   );
 }
 export function Education() {
@@ -879,7 +840,7 @@ export function Lookup() {
     <div className="wrap section narrow">
       <Heading
         title="Consultar solicitud"
-        text="Usa el código que apareció al registrar tu solicitud."
+        text="Consulta demostrativa: usa el código de una solicitud de demostración. La consulta real requerirá verificación segura."
       />
       <Panel>
         <Form
@@ -1018,9 +979,7 @@ export function Verify() {
           </Field>
         </Form>
       </Panel>
-      <Link className="text-link mt-5" to="/solicitar">
-        Registrar una primera solicitud
-      </Link>
+      <div className="mt-5"><WhatsAppLink>Solicitar por WhatsApp</WhatsAppLink></div>
     </div>
   );
 }
