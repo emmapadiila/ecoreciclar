@@ -156,6 +156,17 @@ class HistorialEstado(Base):
     __table_args__ = (Index("ix_historial_solicitud_fecha", "solicitud_id", "fecha"),)
 
 
+class EventoSolicitud(Base):
+    __tablename__ = "eventos_solicitud"
+    id = pk()
+    solicitud_id = Column(ForeignKey("solicitudes.id"), nullable=False)
+    actor_id = Column(ForeignKey("usuarios.id"), nullable=False)
+    tipo = Column(String(30), nullable=False)
+    datos = Column(JSONB, nullable=False)
+    fecha = timestamp()
+    __table_args__ = (Index("ix_eventos_solicitud_orden", "solicitud_id", "id"),)
+
+
 class Recoleccion(Base):
     __tablename__ = "recolecciones"
     id = pk()

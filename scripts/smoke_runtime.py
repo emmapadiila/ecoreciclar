@@ -3,6 +3,8 @@
 Requiere demo_complete y provision_runtime --test previos. No simula envío Meta.
 """
 import os
+from datetime import datetime, timedelta, timezone
+from time import sleep
 from dotenv import load_dotenv
 from fastapi.testclient import TestClient
 from sqlalchemy import select, text
@@ -45,8 +47,16 @@ def main():
             sid = response.json()["id"]
             response = client.post(f"/solicitudes/{sid}/asignacion", headers=coordinator, json={"recolector_id": rid})
             assert response.status_code == 201, response.text
-            response = client.post(f"/solicitudes/{sid}/programacion", headers=coordinator, json={"programada_en": "2030-01-15T09:00:00-05:00"})
-            assert response.status_code == 200, response.text
+            planned = datetime.now(timezone.utc) + timedelta(seconds=3)
+            for step, payload in (("confirmacion", {"respuesta": "aceptacion"}),
+                                  ("programacion", {"programada_en": planned.isoformat()}),
+                                  ("recogida", {"fecha_real": planned.isoformat(), "resultado": "realizada"}),
+                                  ("recepcion", {"fecha_real": planned.isoformat(), "material": "DEMO material"}),
+                                  ("pesaje", {"peso_real_kg": "5", "material": "DEMO material"})):
+                if step == "recogida":
+                    sleep(max(0, (planned - datetime.now(timezone.utc)).total_seconds()))
+                response = client.post(f"/solicitudes/{sid}/{step}", headers=coordinator, json=payload)
+                assert response.status_code == 200, response.text
             response = client.post(f"/solicitudes/{sid}/cierre", headers=coordinator, json={"peso_real_kg": "5"})
             assert response.status_code == 200, response.text
             assert response.json()["puntos"] == expected

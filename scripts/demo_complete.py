@@ -1,5 +1,6 @@
 """Aprueba reglas FICTICIAS y completa ambos cierres, solamente en una base _test."""
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 from decimal import Decimal
 from dotenv import load_dotenv
@@ -9,7 +10,8 @@ from sqlalchemy.orm import Session
 from alembic import command
 from alembic.config import Config
 from backend.models import ReglaPuntos, Solicitud, Usuario, CoordinadorColectivo
-from backend.services import close_collection, set_actor
+from backend.main import ContactInput, PickupInput, ReceiptInput, WeightInput
+from backend.services import close_collection, operation, record_operation, set_actor
 
 
 def main():
@@ -36,6 +38,21 @@ def main():
             coord_id = session.scalar(select(CoordinadorColectivo.usuario_id).where(
                 CoordinadorColectivo.colectivo_id == request.colectivo_id, CoordinadorColectivo.activo))
             coordinator = session.get(Usuario, coord_id)
+            _, _, step = operation(session, request)
+            when = datetime.now(timezone.utc)
+            if step in ("pendiente", "rechazada"):
+                record_operation(session, coordinator, request.id, "confirmacion", ContactInput(respuesta="aceptacion"))
+                step = "programada"
+            if step == "programada":
+                record_operation(session, coordinator, request.id, "recogida", PickupInput(fecha_real=when, resultado="realizada"))
+                step = "recogida"
+            if step == "recogida":
+                _, latest, _ = operation(session, request)
+                record_operation(session, coordinator, request.id, "recepcion", ReceiptInput(
+                    fecha_real=max(when, datetime.fromisoformat(latest.datos["fecha_real"])), material="DEMO material"))
+                step = "recibida_material"
+            if step == "recibida_material":
+                record_operation(session, coordinator, request.id, "pesaje", WeightInput(peso_real_kg=5, material="DEMO material"))
             collection, points = close_collection(session, coordinator, request.id, Decimal("5.00"))
             print(request.codigo, "peso", collection.peso_real_kg, "puntos ficticios", points)
     print("Ambos cierres confirmados en base de pruebas.")

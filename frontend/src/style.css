@@ -1034,6 +1034,10 @@ thead th {
   background: white;
   border: 1px solid #b7d1be;
 }
+.timeline li[aria-current="step"] {
+  background: var(--mint);
+  border-radius: 0.65rem;
+}
 .calendar {
   display: grid;
   grid-template-columns: repeat(7, minmax(0, 1fr));

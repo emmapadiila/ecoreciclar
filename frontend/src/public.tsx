@@ -15,7 +15,6 @@ import {
   ClipboardList,
   Coins,
   Leaf,
-  LockKeyhole,
   MapPin,
   Menu,
   MessageCircle,
@@ -53,7 +52,7 @@ import { useDemo } from "./store";
 import { createRequest } from "./operations";
 import {
   apiToken,
-  authService,
+  clearApiToken,
   materialService,
   solicitudService,
 } from "./services";
@@ -561,7 +560,8 @@ export function IntakePage() {
     classification?: string;
   } | null;
   const [step, setStep] = useState(0),
-    [code, setCode] = useState("");
+    [code, setCode] = useState(""),
+    [serverId, setServerId] = useState<number>();
   const [draft, setDraft] = useState<Intake>({
     name: person?.name ?? "",
     phone: person?.phone ?? "",
@@ -588,7 +588,7 @@ export function IntakePage() {
           />
           <p className="request-code">{code}</p>
           <Badge status="Recibida" />
-          <Link className="btn primary mt-5" to={"/consultar?codigo=" + code}>
+          <Link className="btn primary mt-5" to={serverId ? "/operacion/solicitud/" + serverId : "/consultar?codigo=" + code}>
             Consultar solicitud
           </Link>
         </Panel>
@@ -666,6 +666,7 @@ export function IntakePage() {
                 }],
               });
               setCode(created.codigo);
+              setServerId(created.id);
               return;
             }
             let next = "";
@@ -891,9 +892,44 @@ export function Lookup() {
     </div>
   );
 }
+function DemoAccess({ resident = false }: { resident?: boolean }) {
+  const { state, login } = useDemo();
+  const navigate = useNavigate();
+  const [role, setRole] = useState<Role>(resident ? "hogar" : "admin");
+  const accounts = state.people.filter((person) => person.active && person.role === role);
+
+  return (
+    <Panel title="Perfil de demostración">
+      <p>Entra con una cuenta ficticia. Los cambios se guardan en este navegador.</p>
+      <Form
+        label="Entrar al panel"
+        onSave={(data) => {
+          const person = accounts.find((account) => account.id === value(data, "account"));
+          if (!person) throw Error("Selecciona una cuenta activa para este perfil.");
+          clearApiToken();
+          login({ id: person.id, role: person.role });
+          navigate("/panel/" + person.role);
+        }}
+      >
+        <Field label="Perfil">
+          <select value={role} onChange={(event) => setRole(event.target.value as Role)}>
+            {(Object.keys(roles) as Role[])
+              .filter((item) => isResident(item) === resident)
+              .map((item) => <option key={item} value={item}>{roles[item]}</option>)}
+          </select>
+        </Field>
+        <Field label="Cuenta">
+          <select name="account" key={role} required>
+            {accounts.length === 0 && <option value="">Sin cuentas activas</option>}
+            {accounts.map((person) => <option key={person.id} value={person.id}>{person.name}</option>)}
+          </select>
+        </Field>
+      </Form>
+    </Panel>
+  );
+}
+
 export function Access() {
-  const { login } = useDemo(),
-    navigate = useNavigate();
   return (
     <div className="wrap section sign-in">
       <aside>
@@ -906,79 +942,29 @@ export function Access() {
         <Link to="/verificar">
           Soy residente o negocio <ArrowRight size={17} />
         </Link>
+        <Link className="text-link mt-4" to="/acceso-registrado">
+          Acceder con una cuenta registrada <ArrowRight size={17} />
+        </Link>
       </aside>
-      <Panel title="Acceso con cuenta registrada">
-        <p>Usa el correo autorizado y la contraseña configurada en el servidor.</p>
-        <Form
-          label="Entrar al panel"
-          onSave={async (d) => {
-            await authService.login({
-              correo: value(d, "correo"),
-              password: value(d, "password"),
-            });
-            const person = await authService.me();
-            let role: Role;
-            if (person.rol === "coordinador")
-              role = person.colectivo_tipo === "organico" ? "huerta" : "reciclaje";
-            else if (person.rol === "administrador")
-              role = "admin";
-            else if (person.rol === "recolector")
-              role = "reciclador";
-            else
-              role = person.tipo_generador;
-            login({ id: String(person.id), role });
-            navigate("/panel/" + role);
-          }}
-        >
-          <Field label="Correo">
-            <input name="correo" type="email" required autoComplete="username" />
-          </Field>
-          <Field label="Contraseña">
-            <input name="password" type="password" required autoComplete="current-password" />
-          </Field>
-        </Form>
-      </Panel>
+      <DemoAccess />
     </div>
   );
 }
 export function Verify() {
-  const { actor, login } = useDemo(),
-    navigate = useNavigate();
+  const { actor } = useDemo();
   return (
     <div className="wrap section narrow">
       <Heading
         title="Mi EcoConecta"
-        text="Accede con tu cuenta registrada."
+        text="Consulta solicitudes y EcoPuntos con un perfil de hogar o negocio."
       />
-      <Panel>
-        <LockKeyhole />
-        {actor && isResident(actor.role) && (
-          <Link className="text-link" to={"/panel/" + actor.role}>
-            Volver a mi panel
-          </Link>
-        )}
-        <Form
-          label="Entrar"
-          onSave={async (d) => {
-            await authService.login({
-              correo: value(d, "correo"),
-              password: value(d, "password"),
-            });
-            const person = await authService.me();
-            if (person.rol !== "residente")
-              throw Error("Esta entrada es solo para residentes o negocios.");
-            login({ id: String(person.id), role: person.tipo_generador });
-            navigate("/panel/" + person.tipo_generador);
-          }}
-        >
-          <Field label="Correo">
-            <input name="correo" type="email" required autoComplete="username" />
-          </Field>
-          <Field label="Contraseña">
-            <input name="password" type="password" required autoComplete="current-password" />
-          </Field>
-        </Form>
-      </Panel>
+      {actor && isResident(actor.role) && (
+        <Link className="text-link mb-4" to={"/panel/" + actor.role}>
+          Volver a mi panel
+        </Link>
+      )}
+      <DemoAccess resident />
+      <Link className="text-link mt-4" to="/acceso-registrado">Acceder con una cuenta registrada</Link>
       <div className="mt-5"><WhatsAppLink>Solicitar por WhatsApp</WhatsAppLink></div>
     </div>
   );

@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -19,11 +19,13 @@ from backend.db import database_url, get_session
 from backend.models import (
     Colectivo,
     CoordinadorColectivo,
+    EventoSolicitud,
     HistorialEstado,
     Material,
     MovimientoPuntos,
     Recoleccion,
     Recolector,
+    SolicitudMaterial,
     Usuario,
 )
 
@@ -81,24 +83,44 @@ class AssignmentInput(Input):
     recolector_id: int = Field(gt=0)
 
 
-class ScheduleInput(Input):
-    programada_en: datetime
+class NotesInput(Input):
+    observaciones: str = Field(default="", max_length=1000)
 
-    @field_validator("programada_en")
-    @classmethod
-    def timezone_required(cls, value):
-        if value.tzinfo is None or value.utcoffset() is None:
-            raise ValueError("Fecha y hora con zona obligatorias")
-        return value
+
+class ScheduleInput(NotesInput):
+    programada_en: AwareDatetime
+
+
+class ContactInput(NotesInput):
+    respuesta: Literal["aceptacion", "rechazo", "sin_respuesta", "pendiente"]
+    recolector_id: int | None = Field(default=None, gt=0)
+
+
+class PickupInput(NotesInput):
+    fecha_real: AwareDatetime
+    resultado: Literal["realizada", "incidencia"]
+
+
+class ReceiptInput(NotesInput):
+    fecha_real: AwareDatetime
+    material: str = Field(min_length=1, max_length=200)
+
+
+class WeightInput(NotesInput):
+    peso_real_kg: Decimal = Field(gt=0, max_digits=10, decimal_places=2, allow_inf_nan=False)
+    material: str = Field(min_length=1, max_length=200)
 
 
 class CloseInput(Input):
-    peso_real_kg: Decimal = Field(gt=0, max_digits=10, decimal_places=2, allow_inf_nan=False)
+    peso_real_kg: Decimal | None = Field(default=None, gt=0, max_digits=10, decimal_places=2, allow_inf_nan=False)
+    regla_id: int | None = Field(default=None, gt=0)
+    puntos_previstos: Decimal | None = Field(default=None, ge=0, allow_inf_nan=False)
 
 
 class TransitionInput(Input):
     estado: Literal["en_revision", "cancelada"]
     observacion: str = Field(min_length=1, max_length=1000)
+    confirmar_materiales: bool = False
 
 
 def request_output(item):
@@ -189,16 +211,53 @@ def list_requests(session: DB, user: User, offset: int = 0):
 @app.get("/solicitudes/{request_id}")
 def detail(request_id: int, session: DB, user: User):
     item = services.request_for_user(session, user, request_id)
+    assignment, latest, step = services.operation(session, item)
+    owner = session.get(Usuario, item.usuario_id)
+    collective = session.get(Colectivo, item.colectivo_id)
+    worker = session.get(Recolector, assignment.recolector_id) if assignment else None
+    materials = session.execute(select(Material.nombre, SolicitudMaterial.estimado_kg)
+                                .join(SolicitudMaterial, SolicitudMaterial.material_id == Material.id)
+                                .where(SolicitudMaterial.solicitud_id == item.id))
+    pesaje = None
+    cierre = None
+    if step == "pesada" and user.rol == "coordinador":
+        rule = services.rule_for(session, item, services.current_time())
+        weight = Decimal(latest.datos["peso_real_kg"])
+        pesaje = {**latest.datos, "regla_id": rule.id if rule else None,
+                  "puntos_por_kg": str(rule.puntos_por_kg) if rule else None,
+                  "puntos": str(services.points_for(weight, rule)) if rule else None}
+    if item.estado == "recolectada":
+        row = session.execute(select(Recoleccion.peso_real_kg, Recoleccion.fecha_recoleccion, MovimientoPuntos.puntos)
+                              .join(MovimientoPuntos, MovimientoPuntos.recoleccion_id == Recoleccion.id)
+                              .where(Recoleccion.solicitud_id == item.id)).one()
+        cierre = dict(row._mapping)
     return {**request_output(item), "direccion": item.direccion, "descripcion": item.descripcion,
-            "horario_preferido": item.horario_preferido}
+            "horario_preferido": item.horario_preferido, "paso": step, "residente": owner.nombre,
+            "colectivo": collective.nombre, "fecha_creacion": item.fecha_creacion,
+            "materiales": [{"nombre": nombre, "estimado_kg": kg} for nombre, kg in materials],
+            "asignacion": {"recolector_id": worker.id, "nombre": worker.nombre,
+                           "telefono": worker.telefono if user.rol == "coordinador" else None,
+                           "fecha": assignment.fecha_asignacion, "programada_en": assignment.programada_en,
+                           "observaciones": assignment.observaciones if user.rol == "coordinador" else None}
+            if worker else None, "pesaje": pesaje, "cierre": cierre}
 
 
 @app.get("/solicitudes/{request_id}/historial")
 def history(request_id: int, session: DB, user: User):
     services.request_for_user(session, user, request_id)
-    return [{"anterior": h.estado_anterior, "nuevo": h.estado_nuevo, "actor_id": h.usuario_actor_id,
-             "fecha": h.fecha, "observacion": h.observacion} for h in session.scalars(
-                 select(HistorialEstado).where(HistorialEstado.solicitud_id == request_id).order_by(HistorialEstado.id))]
+    states = [{"anterior": h.estado_anterior, "nuevo": h.estado_nuevo, "actor_id": h.usuario_actor_id,
+               "actor": name, "fecha": h.fecha, "observacion": h.observacion if user.rol == "coordinador" else None}
+              for h, name in session.execute(select(HistorialEstado, Usuario.nombre)
+                  .join(Usuario, Usuario.id == HistorialEstado.usuario_actor_id)
+                  .where(HistorialEstado.solicitud_id == request_id).order_by(HistorialEstado.id))]
+    operations = [{"tipo": e.tipo, "actor": name if user.rol == "coordinador" else "Coordinación",
+                   "fecha": e.fecha, "datos": e.datos if user.rol == "coordinador" else {}}
+                  for e, name in session.execute(select(EventoSolicitud, Usuario.nombre)
+                      .join(Usuario, Usuario.id == EventoSolicitud.actor_id)
+                      .where(EventoSolicitud.solicitud_id == request_id).order_by(EventoSolicitud.id))
+                  if user.rol == "coordinador" or e.tipo in ("asignacion", "programacion", "recogida", "recepcion", "pesaje")
+                  or (e.tipo == "confirmacion" and e.datos["respuesta"] == "aceptacion")]
+    return sorted(states + operations, key=lambda event: event["fecha"])
 
 
 @app.post("/solicitudes/{request_id}/asignacion", status_code=201)
@@ -209,19 +268,45 @@ def assign(request_id: int, data: AssignmentInput, session: DB, user: User):
 
 @app.post("/solicitudes/{request_id}/programacion")
 def schedule(request_id: int, data: ScheduleInput, session: DB, user: User):
-    item = services.schedule(session, user, request_id, data.programada_en)
+    item = services.schedule(session, user, request_id, data.programada_en, data.observaciones)
     return {"id": item.id, "programada_en": item.programada_en}
+
+
+@app.post("/solicitudes/{request_id}/confirmacion")
+def contact(request_id: int, data: ContactInput, session: DB, user: User):
+    services.record_operation(session, user, request_id, "confirmacion", data)
+    return {"registrada": True}
+
+
+@app.post("/solicitudes/{request_id}/recogida")
+def pickup(request_id: int, data: PickupInput, session: DB, user: User):
+    services.record_operation(session, user, request_id, "recogida" if data.resultado == "realizada" else "incidencia", data)
+    return {"registrada": True}
+
+
+@app.post("/solicitudes/{request_id}/recepcion")
+def receipt(request_id: int, data: ReceiptInput, session: DB, user: User):
+    services.record_operation(session, user, request_id, "recepcion", data)
+    return {"registrada": True}
+
+
+@app.post("/solicitudes/{request_id}/pesaje")
+def weigh(request_id: int, data: WeightInput, session: DB, user: User):
+    services.record_operation(session, user, request_id, "pesaje", data)
+    return {"registrado": True}
 
 
 @app.post("/solicitudes/{request_id}/cierre")
 def close(request_id: int, data: CloseInput, session: DB, user: User):
-    item, points = services.close_collection(session, user, request_id, data.peso_real_kg)
+    item, points = services.close_collection(session, user, request_id, data.peso_real_kg, data.regla_id,
+                                              data.puntos_previstos)
     return {"recoleccion_id": item.id, "peso_real_kg": str(item.peso_real_kg), "puntos": str(points)}
 
 
 @app.post("/solicitudes/{request_id}/estado")
 def transition(request_id: int, data: TransitionInput, session: DB, user: User):
-    return request_output(services.transition(session, user, request_id, data.estado, data.observacion))
+    return request_output(services.transition(session, user, request_id, data.estado, data.observacion,
+                                               data.confirmar_materiales))
 
 
 @app.get("/mi-cuenta/puntos")

@@ -28,10 +28,14 @@ async function request<T>(
     },
     body: payload === undefined ? undefined : JSON.stringify(payload),
   });
-  if (!response.ok)
-    throw Object.assign(Error("FastAPI devolvió un error."), {
+  if (!response.ok) {
+    const body = await response.json().catch(() => null);
+    throw Object.assign(Error(typeof body?.detail === "string" ? body.detail
+      : response.status === 422 ? "Revisa los datos del formulario."
+      : "No se pudo completar la operación con el servidor."), {
       status: response.status,
     });
+  }
   return response.status === 204 ? (undefined as T) : response.json();
 }
 const idPath = (id: string) => "/solicitudes/" + encodeURIComponent(id);
@@ -69,6 +73,35 @@ export const materialService = {
     "/materiales",
   ),
 };
+export interface ServerRequest {
+  id: number;
+  codigo: string;
+  colectivo_id: number;
+  estado: string;
+}
+export interface ServerRequestDetail extends ServerRequest {
+  paso: string;
+  residente: string;
+  colectivo: string;
+  direccion: string;
+  descripcion: string | null;
+  horario_preferido: string | null;
+  fecha_creacion: string;
+  materiales: { nombre: string; estimado_kg: number | null }[];
+  asignacion: { recolector_id: number; nombre: string; telefono: string | null; fecha: string;
+    programada_en: string | null; observaciones: string | null } | null;
+  pesaje: { peso_real_kg: string; material: string; regla_id: number | null;
+    puntos_por_kg: string | null; puntos: string | null } | null;
+  cierre: { peso_real_kg: number; fecha_recoleccion: string; puntos: number } | null;
+}
+export interface ServerHistory {
+  tipo?: string;
+  nuevo?: string;
+  actor: string;
+  fecha: string;
+  observacion?: string;
+  datos?: Record<string, string | number | null>;
+}
 export const solicitudService = {
   create: (body: unknown) =>
     request<{ id: number; codigo: string; colectivo_id: number; estado: string }>(
@@ -76,12 +109,15 @@ export const solicitudService = {
       "POST",
       body,
     ),
-  list: (params?: Query) => request(withQuery("/solicitudes", params)),
-  detail: (id: string) => request(idPath(id)),
+  list: (params?: Query) => request<ServerRequest[]>(withQuery("/solicitudes", params)),
+  detail: (id: string) => request<ServerRequestDetail>(idPath(id)),
+  history: (id: string) => request<ServerHistory[]>(idPath(id) + "/historial"),
   assign: (id: string, body: unknown) =>
-    request(idPath(id) + "/asignar", "PATCH", body),
+    request(idPath(id) + "/asignacion", "POST", body),
   schedule: (id: string, body: unknown) =>
-    request(idPath(id) + "/programar", "PATCH", body),
+    request(idPath(id) + "/programacion", "POST", body),
+  record: (id: string, action: "estado" | "confirmacion" | "recogida" | "recepcion" | "pesaje", body: unknown) =>
+    request(idPath(id) + "/" + action, "POST", body),
 };
 export const coordinadorService = { list: () => request("/coordinadores") };
 export const recolectorService = {
@@ -89,9 +125,9 @@ export const recolectorService = {
 };
 export const recoleccionService = {
   confirm: (id: string, body: unknown) =>
-    request(idPath(id) + "/confirmar", "POST", body),
+    request(idPath(id) + "/cierre", "POST", body),
 };
-export const puntosService = { balance: () => request("/usuarios/me/puntos") };
+export const puntosService = { balance: () => request<{ puntos: string }>("/mi-cuenta/puntos") };
 export const indicadoresService = {
   list: (params?: Query) =>
     request(withQuery("/dashboard/indicadores", params)),

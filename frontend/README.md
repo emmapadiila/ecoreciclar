@@ -72,6 +72,22 @@ Abre la dirección que indique la terminal. El servidor de vista previa es para 
 
 ## Integraciones futuras
 
+### Operación con una cuenta registrada
+
+Desde `/acceso`, el enlace **Acceder con una cuenta registrada** abre
+`/acceso-registrado`. Los coordinadores gestionan las solicitudes de su
+colectivo y los residentes consultan sus solicitudes y EcoPuntos en
+`/operacion`. El selector demo sigue disponible con datos ficticios.
+
+Para la operación real, FastAPI debe estar conectado a la base autorizada,
+con Alembic en la revisión `0004` y los permisos del rol de ejecución
+actualizados mediante `scripts.provision_runtime`. Configura una contraseña
+para cada cuenta existente mediante `scripts.set_password`. Vite redirige
+`/api` a FastAPI en `127.0.0.1:8000` durante el desarrollo.
+
+El cierre requiere una regla de EcoPuntos aprobada y vigente. Los avisos de
+programación y cierre quedan pendientes de envío en PostgreSQL.
+
 Por ahora no es necesario instalar FastAPI ni configurar WhatsApp, IA o PostgreSQL para ejecutar la demostración. Cuando el backend esté disponible, se podrá configurar `VITE_API_URL` usando `.env.example` como referencia. Las variables `VITE_` son visibles en el frontend y no deben contener secretos.
 
 Consulta [docs/ARQUITECTURA.md](docs/ARQUITECTURA.md) para conocer el alcance y el contrato de API propuesto.

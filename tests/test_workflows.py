@@ -1,5 +1,5 @@
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 from threading import Barrier
@@ -11,6 +11,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from backend.auth import hash_password
+from backend import services
+from backend.main import ContactInput, PickupInput, ReceiptInput, WeightInput
 from backend.models import (
     Asignacion, Colectivo, Conversacion, HistorialEstado, Material, MensajeWhatsapp,
     MovimientoPuntos, Notificacion, Recoleccion, Recolector, ReglaPuntos, Solicitud, Usuario,
@@ -39,6 +41,20 @@ def ids(database, flow="reciclable"):
 def count(database, model):
     with Session(database) as session:
         return session.scalar(select(func.count()).select_from(model))
+
+
+def prepare_pickup(session, user, sid):
+    when = datetime.now(timezone.utc) - timedelta(minutes=1)
+    services.record_operation(session, user, sid, "confirmacion", ContactInput(respuesta="aceptacion"))
+    services.record_operation(session, user, sid, "recogida", PickupInput(fecha_real=when, resultado="realizada"))
+    services.record_operation(session, user, sid, "recepcion", ReceiptInput(fecha_real=when, material="DEMO material"))
+    services.record_operation(session, user, sid, "pesaje", WeightInput(peso_real_kg=5, material="DEMO material"))
+
+
+def prepare_seeded_close(database, sid):
+    with Session(database) as session, session.begin():
+        user = session.scalar(select(Usuario).where(Usuario.correo == "coordinador.reciclaje@example.invalid"))
+        prepare_pickup(session, user, sid)
 
 
 def test_public_daily_results_empty_and_invalid_date(client):
@@ -71,7 +87,7 @@ def test_collectors_are_restricted_to_coordinator_collective(database, client, h
 
 
 @pytest.mark.parametrize("flow,suffix,expected", [("reciclable", "reciclaje", "50.00"), ("organico", "huerta", "25.00")])
-def test_complete_api_flow(database, client, headers, flow, suffix, expected):
+def test_complete_api_flow(database, client, headers, monkeypatch, flow, suffix, expected):
     approve(database)
     before = client.get("/public/resultados-diarios").json()
     cid, collector, material, _ = ids(database, flow)
@@ -86,9 +102,27 @@ def test_complete_api_flow(database, client, headers, flow, suffix, expected):
     assert request["colectivo_id"] == cid
     assert client.get("/mi-cuenta/puntos", headers=resident).json()["puntos"] in ("0", "0.00")
     assert client.post(f"/solicitudes/{sid}/asignacion", headers=coordinator, json={"recolector_id": collector}).status_code == 201
-    response = client.post(f"/solicitudes/{sid}/programacion", headers=coordinator, json={"programada_en": "2030-01-15T09:00:00-05:00"})
+    base = f"/solicitudes/{sid}"
+    planned = datetime.now(timezone.utc) + timedelta(hours=1)
+    schedule_data = {"programada_en": planned.isoformat(), "observaciones": "DEMO planificación"}
+    assert client.post(base + "/programacion", headers=coordinator, json=schedule_data).status_code == 409
+    assert client.post(base + "/confirmacion", headers=coordinator, json={"respuesta": "aceptacion"}).status_code == 200
+    response = client.post(base + "/programacion", headers=coordinator, json=schedule_data)
     assert response.status_code == 200, response.text
+    assert client.post(base + "/cierre", headers=coordinator, json={}).status_code == 409
+    assert client.post(base + "/recogida", headers=coordinator,
+                       json={"fecha_real": planned.isoformat(), "resultado": "realizada"}).status_code == 422
+    monkeypatch.setattr(services, "current_time", lambda: planned + timedelta(minutes=1))
+    for endpoint, payload in (("recogida", {"fecha_real": planned.isoformat(), "resultado": "realizada"}),
+                              ("recepcion", {"fecha_real": planned.isoformat(), "material": "DEMO material"}),
+                              ("pesaje", {"peso_real_kg": "5.00", "material": "DEMO material"})):
+        response = client.post(base + "/" + endpoint, headers=coordinator, json=payload)
+        assert response.status_code == 200, response.text
     assert count(database, MovimientoPuntos) == 0
+    assert client.post(base + "/pesaje", headers=coordinator,
+                       json={"peso_real_kg": "6.00", "material": "DEMO material"}).status_code == 409
+    preview = client.get(base, headers=coordinator).json()["pesaje"]
+    assert Decimal(str(preview["puntos"])) == Decimal(expected)
     response = client.post(f"/solicitudes/{sid}/cierre", headers=coordinator, json={"peso_real_kg": "5.00"})
     assert response.status_code == 200, response.text
     assert response.json()["puntos"] == expected  # Peso confirmado, no estimado.
@@ -101,12 +135,14 @@ def test_complete_api_flow(database, client, headers, flow, suffix, expected):
     assert client.post(f"/solicitudes/{sid}/cierre", headers=coordinator, json={"peso_real_kg": "5"}).status_code == 409
     assert client.get("/mi-cuenta/puntos", headers=resident).json()["puntos"] == expected
     history = client.get(f"/solicitudes/{sid}/historial", headers=coordinator).json()
-    assert [h["nuevo"] for h in history] == ["recibida", "asignada", "programada", "recolectada"]
-    assert all(h["actor_id"] and h["fecha"] for h in history)
+    assert [h["nuevo"] for h in history if "nuevo" in h] == ["recibida", "asignada", "programada", "recolectada"]
+    assert [h["tipo"] for h in history if "tipo" in h] == ["asignacion", "confirmacion", "programacion", "recogida", "recepcion", "pesaje"]
+    assert all(h["actor"] and h["fecha"] for h in history)
+    assert Decimal(str(client.get(base, headers=resident).json()["cierre"]["puntos"])) == Decimal(expected)
     with Session(database) as session:
         assert session.get(Solicitud, sid).estado == "recolectada"
         assignment = session.scalar(select(Asignacion).where(Asignacion.solicitud_id == sid))
-        assert assignment.programada_en.hour == 14  # 09:00 Bogotá -> 14:00 UTC.
+        assert assignment.programada_en == planned
         assert count(database, MovimientoPuntos) == 1
         assert session.scalar(select(func.count()).select_from(Notificacion).where(Notificacion.solicitud_id == sid)) == 2
 
@@ -118,6 +154,50 @@ def test_seed_is_idempotent_and_unapproved(database):
     assert before == (count(database, Solicitud), count(database, Usuario), count(database, HistorialEstado))
     with Session(database) as session:
         assert session.scalar(select(func.count()).select_from(ReglaPuntos).where(ReglaPuntos.aprobada)) == 0
+
+
+@pytest.mark.parametrize("answer", ["rechazo", "sin_respuesta"])
+def test_call_attempt_and_reassignment(database, client, headers, monkeypatch, answer):
+    cid, collector, material, _ = ids(database)
+    with Session(database) as session, session.begin():
+        replacement = Recolector(colectivo_id=cid, nombre="DEMO suplente")
+        session.add(replacement)
+        session.flush()
+        replacement_id = replacement.id
+    coordinator = headers["coordinador.reciclaje@example.invalid"]
+    other = headers["coordinador.huerta@example.invalid"]
+    resident = headers["residente.reciclaje@example.invalid"]
+    created = client.post("/solicitudes", headers=resident, json={
+        "direccion": "DEMO", "materiales": [{"material_id": material, "confirmado": False}],
+    })
+    base = f"/solicitudes/{created.json()['id']}"
+    assert client.post(base + "/estado", headers=coordinator, json={
+        "estado": "en_revision", "observacion": "Revisada", "confirmar_materiales": True,
+    }).status_code == 200
+    assert client.post(base + "/asignacion", headers=coordinator, json={"recolector_id": collector}).status_code == 201
+    assert client.post(base + "/confirmacion", headers=other, json={"respuesta": "aceptacion"}).status_code == 404
+    assert client.post(base + "/confirmacion", headers=coordinator,
+                       json={"respuesta": answer, "observaciones": "Intento de llamada demo"}).status_code == 200
+    assert client.get(base, headers=coordinator).json()["paso"] == ("rechazada" if answer == "rechazo" else "pendiente")
+    planned = datetime.now(timezone.utc) + timedelta(hours=1)
+    schedule = {"programada_en": planned.isoformat()}
+    assert client.post(base + "/programacion", headers=coordinator, json=schedule).status_code == 409
+    assert client.post(base + "/asignacion", headers=coordinator,
+                       json={"recolector_id": replacement_id}).status_code == 201
+    assert client.post(base + "/programacion", headers=coordinator, json=schedule).status_code == 409
+    assert client.post(base + "/confirmacion", headers=coordinator, json={"respuesta": "aceptacion"}).status_code == 200
+    assert client.post(base + "/programacion", headers=coordinator, json=schedule).status_code == 200
+    monkeypatch.setattr(services, "current_time", lambda: planned + timedelta(minutes=1))
+    assert client.post(base + "/recogida", headers=coordinator, json={
+        "fecha_real": planned.isoformat(), "resultado": "incidencia", "observaciones": "Sin acceso",
+    }).status_code == 200
+    assert client.get(base, headers=coordinator).json()["paso"] == "incidencia"
+    assert client.post(base + "/programacion", headers=coordinator,
+                       json={"programada_en": (planned + timedelta(hours=1)).isoformat()}).status_code == 200
+    events = client.get(base + "/historial", headers=coordinator).json()
+    assert [event["datos"]["respuesta"] for event in events if event.get("tipo") == "confirmacion"] == [answer, "aceptacion"]
+    assert [event["datos"]["recolector_id"] for event in events if event.get("tipo") == "asignacion"] == [collector, replacement_id]
+    assert count(database, MovimientoPuntos) == 0
     assert count(database, MovimientoPuntos) == 0
 
 
@@ -239,6 +319,7 @@ def test_close_requires_valid_weight(database, client, headers, weight):
 
 def test_unapproved_rule_rolls_back_entire_close(database, client, headers):
     sid = ids(database)[3]
+    prepare_seeded_close(database, sid)
     before = count(database, HistorialEstado), count(database, Notificacion)
     response = client.post(f"/solicitudes/{sid}/cierre", headers=headers["coordinador.reciclaje@example.invalid"], json={"peso_real_kg": "5"})
     assert response.status_code == 409
@@ -251,6 +332,7 @@ def test_unapproved_rule_rolls_back_entire_close(database, client, headers):
 def test_concurrent_close_credits_once(database):
     approve(database)
     sid = ids(database)[3]
+    prepare_seeded_close(database, sid)
     barrier = Barrier(2)
     def close():
         try:
@@ -290,6 +372,7 @@ def test_fabricated_history_is_rejected(database):
 @pytest.mark.parametrize("kind", ["wrong_owner", "wrong_collective", "wrong_amount", "no_collection"])
 def test_forged_points_are_rejected(database, kind):
     approve(database)
+    prepare_seeded_close(database, ids(database)[3])
     with pytest.raises(IntegrityError):
         with Session(database) as session, session.begin():
             user = session.scalar(select(Usuario).where(Usuario.correo == "coordinador.reciclaje@example.invalid"))
@@ -345,6 +428,7 @@ def test_nullable_whatsapp_and_code_unique(database):
 
 
 def test_direct_close_without_points_fails_at_commit(database):
+    prepare_seeded_close(database, ids(database)[3])
     with pytest.raises(IntegrityError):
         with Session(database) as session, session.begin():
             user = session.scalar(select(Usuario).where(Usuario.correo == "coordinador.reciclaje@example.invalid"))
@@ -361,6 +445,7 @@ def test_direct_close_without_points_fails_at_commit(database):
 def test_duplicate_and_tampered_points_blocked(database, client, headers):
     approve(database)
     sid = ids(database)[3]
+    prepare_seeded_close(database, sid)
     assert client.post(f"/solicitudes/{sid}/cierre", headers=headers["coordinador.reciclaje@example.invalid"], json={"peso_real_kg": "5"}).status_code == 200
     for sql in (
         "UPDATE movimientos_puntos SET puntos=500",
@@ -385,7 +470,9 @@ def test_expired_rule_and_overlap(database, client, headers):
             rule.aprobada = True
             rule.aprobada_por = admin.id
     sid = ids(database)[3]
+    prepare_seeded_close(database, sid)
     assert client.post(f"/solicitudes/{sid}/cierre", headers=headers["coordinador.reciclaje@example.invalid"], json={"peso_real_kg": "5"}).status_code == 409
+
     with pytest.raises(IntegrityError):
         with Session(database) as session, session.begin():
             admin = session.scalar(select(Usuario).where(Usuario.rol == "administrador"))

@@ -52,7 +52,7 @@ BEGIN
   INSERT INTO asignaciones(solicitud_id,colectivo_id,coordinador_id,recolector_id)
     VALUES(sid,cid,coord,rid);
   UPDATE solicitudes SET estado='asignada' WHERE id=sid;
-  UPDATE asignaciones SET programada_en='2030-01-15T09:00:00-05:00' WHERE solicitud_id=sid;
+  UPDATE asignaciones SET programada_en=now() - interval '1 day' WHERE solicitud_id=sid;
   UPDATE solicitudes SET estado='programada' WHERE id=sid;
   INSERT INTO notificaciones(usuario_id,solicitud_id,tipo,mensaje)
     VALUES(uid,sid,'programacion','DEMO programación ficticia; no enviar');

@@ -38,6 +38,7 @@ import {
   Verify,
 } from "./public";
 import { DemoProvider, useDemo } from "./store";
+import { OperationAccess, OperationPanel } from "./request-operation";
 import { Brand, Heading } from "./ui";
 import { Calendar, Profile, RequestDetail, RequestList } from "./requests";
 import { Impact, Notifications, Overview, Points } from "./impact";
@@ -73,6 +74,7 @@ function menu(role: Role): Item[] {
       requests,
       collections,
       points,
+      ["reglas", "Reglas de EcoPuntos", Coins],
       ["contenidos", "Contenidos ambientales", BookOpen],
       ["reportes", "Indicadores", BarChart3],
       ["auditoria", "Auditoría", History],
@@ -181,8 +183,7 @@ function PanelRoutes() {
   const root = section.split("/")[0];
   const custom =
     (root === "solicitud" && role !== "fundacion") ||
-    (root === "asignaciones" && collector) ||
-    (root === "reglas" && role === "admin");
+    (root === "asignaciones" && collector);
   if (!links.some(([s]) => s === root) && !custom)
     return <Navigate to="/acceso-denegado" replace />;
   const unread = state.notices.filter(
@@ -408,6 +409,9 @@ function App() {
           <Route path="consultar" element={<Lookup />} />
           <Route path="acceso" element={<Access />} />
           <Route path="verificar" element={<Verify />} />
+          <Route path="acceso-registrado" element={<OperationAccess />} />
+          <Route path="operacion" element={<OperationPanel />} />
+          <Route path="operacion/solicitud/:id" element={<OperationPanel />} />
           <Route path="acceso-denegado" element={<Problem kind="permiso" />} />
           <Route path="sesion-expirada" element={<Problem kind="sesion" />} />
           <Route path="error-conexion" element={<Problem kind="conexion" />} />

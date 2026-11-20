@@ -4,13 +4,13 @@ from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 from fastapi import HTTPException
-from sqlalchemy import case, distinct, func, select, text
+from sqlalchemy import case, distinct, func, select, text, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from backend.models import (
-    Asignacion, Colectivo, Conversacion, CoordinadorColectivo, HistorialEstado,
-    Material, MensajeWhatsapp, MovimientoPuntos, Notificacion, Recoleccion,
+    Asignacion, Colectivo, Conversacion, CoordinadorColectivo, EventoSolicitud,
+    Material, MensajeWhatsapp, MovimientoPuntos, Notificacion, Recoleccion, Recolector,
     ReglaPuntos, Solicitud, SolicitudMaterial, Usuario,
 )
 
@@ -93,57 +93,143 @@ def create_request(session: Session, user: Usuario, data, *, origin="web"):
     return request
 
 
+def current_time():
+    return datetime.now(timezone.utc)
+
+
+def operation(session: Session, request: Solicitud):
+    assignment = session.scalar(select(Asignacion).where(Asignacion.solicitud_id == request.id))
+    latest = session.scalar(select(EventoSolicitud).where(EventoSolicitud.solicitud_id == request.id)
+                            .order_by(EventoSolicitud.id.desc()).limit(1))
+    if request.estado in ("recibida", "en_revision", "recolectada", "cancelada"):
+        return assignment, latest, request.estado
+    if latest and latest.tipo == "confirmacion":
+        step = {"aceptacion": "confirmada", "rechazo": "rechazada"}.get(latest.datos["respuesta"], "pendiente")
+        if step == "confirmada" and request.estado == "programada":
+            step = "programada"
+    else:
+        step = {"programacion": "programada", "incidencia": "incidencia", "recogida": "recogida",
+                "recepcion": "recibida_material", "pesaje": "pesada"}.get(latest.tipo if latest else "", "pendiente")
+    return assignment, latest, step
+
+
+def add_event(session: Session, request: Solicitud, user: Usuario, kind: str, **data):
+    session.add(EventoSolicitud(solicitud_id=request.id, actor_id=user.id, tipo=kind, datos=data))
+    session.flush()
+
+
 def assign(session: Session, user: Usuario, request_id: int, collector_id: int):
     request = request_for_user(session, user, request_id, lock=True, coordinator=True)
-    if request.estado not in ("recibida", "en_revision"):
-        raise HTTPException(409, "La solicitud no admite asignación")
+    assignment, latest, step = operation(session, request)
     set_actor(session, user.id)
-    assignment = Asignacion(solicitud_id=request.id, colectivo_id=request.colectivo_id,
-                            coordinador_id=user.id, recolector_id=collector_id)
-    session.add(assignment)
+    previous = None
+    if step in ("recibida", "en_revision"):
+        assignment = Asignacion(solicitud_id=request.id, colectivo_id=request.colectivo_id,
+                                coordinador_id=user.id, recolector_id=collector_id)
+        session.add(assignment)
+    elif (assignment and latest and latest.tipo == "confirmacion" and
+          assignment.recolector_id != collector_id and
+          latest.datos["respuesta"] in ("rechazo", "sin_respuesta") and step in ("pendiente", "rechazada")):
+        previous = assignment.recolector_id
+        assignment.recolector_id = collector_id
+        assignment.coordinador_id = user.id
+        assignment.fecha_asignacion = current_time()
+        assignment.programada_en = None
+        assignment.observaciones = None
+    else:
+        raise HTTPException(409, "La solicitud no admite asignar ese responsable")
     session.flush()
     request.estado = "asignada"
     session.flush()
+    add_event(session, request, user, "asignacion", recolector_id=collector_id, anterior_id=previous)
     return assignment
 
 
-def schedule(session: Session, user: Usuario, request_id: int, when: datetime):
+def schedule(session: Session, user: Usuario, request_id: int, when: datetime, notes: str = ""):
     request = request_for_user(session, user, request_id, lock=True, coordinator=True)
-    if request.estado != "asignada":
-        raise HTTPException(409, "Primero debe asignarse un responsable")
+    assignment, _, step = operation(session, request)
+    if step not in ("confirmada", "incidencia"):
+        raise HTTPException(409, "Primero registre la aceptación telefónica o una incidencia")
     if when.tzinfo is None or when.utcoffset() is None:
         raise HTTPException(422, "Incluya zona horaria, por ejemplo -05:00")
+    if when <= current_time():
+        raise HTTPException(422, "La programación debe ser futura")
     set_actor(session, user.id)
-    assignment = session.scalar(select(Asignacion).where(Asignacion.solicitud_id == request.id))
+    assignment.coordinador_id = user.id
     assignment.programada_en = when
+    assignment.observaciones = notes
     session.flush()
     request.estado = "programada"
-    session.add(Notificacion(usuario_id=request.usuario_id, solicitud_id=request.id,
-                             tipo="programacion", mensaje=f"Solicitud {request.codigo} programada: {when.isoformat()}"))
     session.flush()
+    add_event(session, request, user, "programacion", fecha_real=when.isoformat(), observaciones=notes,
+              recolector_id=assignment.recolector_id)
+    notice = insert(Notificacion).values(usuario_id=request.usuario_id, solicitud_id=request.id, tipo="programacion",
+                                         mensaje=f"Solicitud {request.codigo} programada: {when.isoformat()}")
+    session.execute(notice.on_conflict_do_update(
+        index_elements=[Notificacion.solicitud_id, Notificacion.tipo],
+        set_={"mensaje": notice.excluded.mensaje, "estado": "pendiente", "intentos": 0},
+    ))
     return assignment
 
 
-def close_collection(session: Session, user: Usuario, request_id: int, weight: Decimal):
+def record_operation(session: Session, user: Usuario, request_id: int, kind: str, data):
     request = request_for_user(session, user, request_id, lock=True, coordinator=True)
-    if request.estado != "programada":
-        raise HTTPException(409, "Solicitud no programada o ya cerrada")
+    assignment, latest, step = operation(session, request)
+    expected = {"confirmacion": {"pendiente", "rechazada"}, "recogida": {"programada"},
+                "incidencia": {"programada"}, "recepcion": {"recogida"}, "pesaje": {"recibida_material"}}
+    if not assignment or step not in expected[kind]:
+        raise HTTPException(409, "Complete el paso anterior de la solicitud")
+    expected_worker = getattr(data, "recolector_id", None)
+    if expected_worker is not None and expected_worker != assignment.recolector_id:
+        raise HTTPException(409, "El responsable cambió. Vuelva a consultar la solicitud.")
+    when = getattr(data, "fecha_real", None)
+    if when:
+        earliest = assignment.programada_en if kind in ("recogida", "incidencia") else datetime.fromisoformat(latest.datos["fecha_real"])
+        if when > current_time() or when < earliest:
+            raise HTTPException(422, "La fecha real debe estar entre el paso anterior y el momento actual")
     set_actor(session, user.id)
-    assignment = session.scalar(select(Asignacion).where(Asignacion.solicitud_id == request.id))
+    add_event(session, request, user, kind, recolector_id=assignment.recolector_id,
+              **data.model_dump(mode="json", exclude={"recolector_id"}))
+
+
+def rule_for(session: Session, request: Solicitud, instant: datetime, *, lock=False):
+    query = select(ReglaPuntos).where(
+        ReglaPuntos.colectivo_id == request.colectivo_id, ReglaPuntos.aprobada,
+        ReglaPuntos.fecha_inicio <= instant,
+        (ReglaPuntos.fecha_fin.is_(None)) | (ReglaPuntos.fecha_fin > instant),
+    )
+    return session.scalar(query.with_for_update(read=True) if lock else query)
+
+
+def points_for(weight: Decimal, rule: ReglaPuntos):
+    return (weight * rule.puntos_por_kg).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+
+def close_collection(session: Session, user: Usuario, request_id: int, weight: Decimal | None = None,
+                     rule_id: int | None = None, expected_points: Decimal | None = None):
+    request = request_for_user(session, user, request_id, lock=True, coordinator=True)
+    assignment, latest, step = operation(session, request)
+    if step != "pesada":
+        raise HTTPException(409, "La solicitud requiere un pesaje registrado y debe estar abierta")
+    recorded_weight = Decimal(latest.datos["peso_real_kg"])
+    if weight is not None and weight != recorded_weight:
+        raise HTTPException(409, "El peso enviado no coincide con el pesaje registrado")
+    set_actor(session, user.id)
     collection = Recoleccion(solicitud_id=request.id, asignacion_id=assignment.id,
-                             peso_real_kg=weight, registrado_por=user.id)
+                             peso_real_kg=recorded_weight, registrado_por=user.id,
+                             observaciones=latest.datos.get("observaciones"))
     session.add(collection)
     session.flush()
     session.refresh(collection)
     # Se usa el instante de cierre asignado por PostgreSQL, no un reloj del cliente.
-    rule = session.scalar(select(ReglaPuntos).where(
-        ReglaPuntos.colectivo_id == request.colectivo_id, ReglaPuntos.aprobada,
-        ReglaPuntos.fecha_inicio <= collection.fecha_recoleccion,
-        (ReglaPuntos.fecha_fin.is_(None)) | (ReglaPuntos.fecha_fin > collection.fecha_recoleccion),
-    ).with_for_update(read=True))
+    rule = rule_for(session, request, collection.fecha_recoleccion, lock=True)
     if rule is None:
         raise HTTPException(409, "No existe regla aprobada vigente; cierre revertido")
-    points = (weight * rule.puntos_por_kg).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    if rule_id is not None and rule.id != rule_id:
+        raise HTTPException(409, "La regla de EcoPuntos cambió. Vuelva a consultar el pesaje.")
+    points = points_for(recorded_weight, rule)
+    if expected_points is not None and points != expected_points:
+        raise HTTPException(409, "La estimación de EcoPuntos cambió. Vuelva a consultar el pesaje.")
     session.add(MovimientoPuntos(usuario_id=request.usuario_id, recoleccion_id=collection.id,
                                 regla_id=rule.id, puntos=points, concepto="Recolección confirmada"))
     session.add(Notificacion(usuario_id=request.usuario_id, solicitud_id=request.id,
@@ -153,9 +239,12 @@ def close_collection(session: Session, user: Usuario, request_id: int, weight: D
     return collection, points
 
 
-def transition(session: Session, user: Usuario, request_id: int, state: str, reason: str):
+def transition(session: Session, user: Usuario, request_id: int, state: str, reason: str, confirm_materials=False):
     request = request_for_user(session, user, request_id, lock=True, coordinator=True)
     set_actor(session, user.id, reason)
+    if state == "en_revision" and confirm_materials:
+        session.execute(update(SolicitudMaterial).where(SolicitudMaterial.solicitud_id == request.id)
+                        .values(confirmado=True))
     request.estado = state
     session.flush()
     return request
