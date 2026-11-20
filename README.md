@@ -4,6 +4,7 @@ Infraestructura de Ángel para el piloto Villas de San Pablo, Barranquilla. Post
 
 ## Documentación
 
+- [Estructura base del frontend](frontend/README.md).
 - [Modelo: 18 tablas, columnas, restricciones e índices](docs/modelo-datos.md).
 - [Diagrama ER Mermaid](docs/diagrama-er.md).
 - [Arquitectura, contrato API, permisos y decisiones de integración](docs/arquitectura.md).
