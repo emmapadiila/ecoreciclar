@@ -84,7 +84,9 @@ export const solicitudService = {
     request(idPath(id) + "/programar", "PATCH", body),
 };
 export const coordinadorService = { list: () => request("/coordinadores") };
-export const recolectorService = { list: () => request("/recolectores") };
+export const recolectorService = {
+  list: () => request<Array<{ id: number; nombre: string; telefono: string | null; colectivo_id: number }>>("/recolectores"),
+};
 export const recoleccionService = {
   confirm: (id: string, body: unknown) =>
     request(idPath(id) + "/confirmar", "POST", body),

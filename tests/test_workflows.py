@@ -41,6 +41,22 @@ def count(database, model):
         return session.scalar(select(func.count()).select_from(model))
 
 
+def test_collectors_are_restricted_to_coordinator_collective(database, client, headers):
+    recycling_id, recycling_collector, _, _ = ids(database, "reciclable")
+    organic_id, organic_collector, _, _ = ids(database, "organico")
+    response = client.get("/recolectores", headers=headers["coordinador.reciclaje@example.invalid"])
+    assert response.status_code == 200
+    assert recycling_collector in [worker["id"] for worker in response.json()]
+    assert all(worker["colectivo_id"] == recycling_id for worker in response.json())
+    assert organic_collector not in [worker["id"] for worker in response.json()]
+    response = client.get("/recolectores", headers=headers["coordinador.huerta@example.invalid"])
+    assert response.status_code == 200
+    assert organic_collector in [worker["id"] for worker in response.json()]
+    assert all(worker["colectivo_id"] == organic_id for worker in response.json())
+    assert client.get("/recolectores", headers=headers["residente.reciclaje@example.invalid"]).status_code == 403
+    assert client.get("/recolectores").status_code == 401
+
+
 @pytest.mark.parametrize("flow,suffix,expected", [("reciclable", "reciclaje", "50.00"), ("organico", "huerta", "25.00")])
 def test_complete_api_flow(database, client, headers, flow, suffix, expected):
     approve(database)

@@ -22,6 +22,7 @@ from backend.models import (
     Material,
     MovimientoPuntos,
     Recoleccion,
+    Recolector,
     Usuario,
 )
 
@@ -146,6 +147,22 @@ def authenticated_user(user: User, session: DB):
 def materials(session: DB, user: User):
     return [{"id": m.id, "nombre": m.nombre, "categoria": m.categoria} for m in
             session.scalars(select(Material).where(Material.aceptado, Material.activo))]
+
+
+@app.get("/recolectores")
+def collectors(session: DB, user: User):
+    if user.rol != "coordinador":
+        raise HTTPException(403, "Se requiere coordinador")
+    collective_ids = select(CoordinadorColectivo.colectivo_id).join(Colectivo).where(
+        CoordinadorColectivo.usuario_id == user.id,
+        CoordinadorColectivo.activo,
+        Colectivo.activo,
+    )
+    workers = session.scalars(select(Recolector).where(
+        Recolector.colectivo_id.in_(collective_ids), Recolector.activo,
+    ).order_by(Recolector.nombre, Recolector.id))
+    return [{"id": worker.id, "nombre": worker.nombre, "telefono": worker.telefono,
+             "colectivo_id": worker.colectivo_id} for worker in workers]
 
 
 @app.post("/solicitudes", status_code=201)
