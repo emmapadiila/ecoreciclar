@@ -14,6 +14,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from backend import services
+from backend.whatsapp import router as whatsapp_router
 from backend.auth import auth_secret, current_user, issue_token, verify_password
 from backend.db import database_url, get_session
 from backend.models import (
@@ -38,6 +39,7 @@ async def lifespan(app):
 
 
 app = FastAPI(title="EcoConecta 360 — API de referencia", lifespan=lifespan)
+app.include_router(whatsapp_router)
 cors_origins = [origin.strip() for origin in os.getenv("CORS_ORIGINS", "").split(",") if origin.strip()]
 if cors_origins:
     app.add_middleware(
