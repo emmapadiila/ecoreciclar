@@ -350,3 +350,55 @@ def test_t03_saludo_devuelve_menu():
 def test_respuesta_foto_honesta():
     mensaje = MensajeWhatsapp(tipo="imagen")
     assert responder(mensaje, Conversacion(), Usuario()) == RESPUESTA_FOTO
+
+
+def test_contrato_imagen_y_recibo_firmado(client, database, monkeypatch):
+    from backend import whatsapp, whatsapp_meta
+    from datetime import datetime, timezone
+    muestra = b"\xff\xd8\xffsimulada"
+    marca = object()
+    def analizar(datos, mime):
+        assert (datos, mime) == (muestra, "image/jpeg")
+        return marca
+    def chatbot(session, usuario, conversacion, evento):
+        assert evento.analisis_imagen is marca
+        assert usuario.id == conversacion.usuario_id
+        return ["Recibido"]
+    monkeypatch.setattr(app.state, "analizar_imagen", analizar, raising=False)
+    monkeypatch.setattr(app.state, "procesar_evento", chatbot, raising=False)
+    monkeypatch.setattr(whatsapp, "descargar_imagen", lambda _: muestra)
+    monkeypatch.setattr(whatsapp_meta, "enviar", lambda *args: "wamid.respuesta")
+    payload = _payload("wamid.imagen", tipo="image")
+    valor = payload["entry"][0]["changes"][0]["value"]
+    valor["messages"][0]["timestamp"] = str(int(datetime.now(timezone.utc).timestamp()))
+    assert _post(client, payload).json()["nuevos"] == 1
+    del valor["messages"]
+    valor["statuses"] = [{"id": "wamid.respuesta", "status": "delivered"}]
+    assert _post(client, payload).json()["nuevos"] == 0
+    with Session(database) as session:
+        assert session.scalar(select(MensajeWhatsapp.estado_envio).where(
+            MensajeWhatsapp.meta_message_id == "wamid.respuesta")) == "entregado"
+
+
+def test_estructura_invalida(client):
+    assert _post(client, {"entry": [None]}).status_code == 400
+
+
+def test_reintento_tras_rollback_del_chatbot(client, database, monkeypatch):
+    from backend.models import Notificacion
+    payload = _payload("wamid.rollback")
+    def falla(session, usuario, conv, evento):
+        conv.estado_actual = "no_confirmado"
+        raise RuntimeError()
+    monkeypatch.setattr(app.state, "procesar_evento", falla, raising=False)
+    assert _post(client, payload).status_code == 503
+    with Session(database) as session:
+        assert session.scalar(select(MensajeWhatsapp.estado_procesamiento).where(
+            MensajeWhatsapp.meta_message_id == "wamid.rollback")) == "pendiente"
+        assert session.scalar(select(Notificacion.id).where(Notificacion.tipo == "respuesta")) is None
+        assert session.scalar(select(Conversacion.id).where(Conversacion.estado_actual == "no_confirmado")) is None
+    monkeypatch.delattr(app.state, "procesar_evento")
+    assert _post(client, payload).json() == {"success": True, "nuevos": 0}
+    with Session(database) as session:
+        assert session.scalar(select(MensajeWhatsapp.estado_procesamiento).where(
+            MensajeWhatsapp.meta_message_id == "wamid.rollback")) == "procesado"

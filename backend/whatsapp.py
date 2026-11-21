@@ -1,35 +1,4 @@
-"""Webhook de WhatsApp Business Cloud API para EcoConecta 360 (Manuel).
-
-Fases 1-2 del plan, integradas con el contrato de Ángel (docs/arquitectura.md):
-
-- GET  /webhooks/whatsapp: verificación de Meta (hub.challenge, token comparado
-  en tiempo constante).
-- POST /webhooks/whatsapp: valida la firma X-Hub-Signature-256 (HMAC-SHA256 de
-  Meta sobre el cuerpo CRUDO con META_APP_SECRET) y SOLO después de verificarla
-  invoca services.register_verified_message, que registra usuario (sin habilitar
-  piloto), conversación y mensaje entrante de forma idempotente por
-  meta_message_id (T04: los reintentos de Meta no reprocesan).
-- El procesamiento conversacional corre en la MISMA transacción de la petición
-  (fila, efectos y marca 'procesado' juntos, como pide arquitectura.md). Un
-  fallo en un mensaje se aísla con un SAVEPOINT: no aborta la petición ni el
-  registro de los demás; el mensaje queda 'pendiente' para el worker de
-  reintento (recibir no implica procesar). Es síncrono y no en BackgroundTasks
-  por una razón medible: en FastAPI/Starlette las tareas de fondo corren ANTES
-  del commit de la dependencia de sesión, y verían la fila sin confirmar.
-- Cada respuesta del bot queda auditada en mensajes_whatsapp con
-  direccion='saliente'; su estado_envio refleja el resultado real de la llamada
-  a Meta (sin credenciales: 'fallido'; nunca se finge un envío).
-
-Montaje en backend/main.py (coordinar con Breiner, no editar por nuestra cuenta):
-    from backend.whatsapp import router as whatsapp_router
-    app.include_router(whatsapp_router)
-
-URL de callback en Meta: {dominio}/webhooks/whatsapp
-Variables de entorno (documentar nombres en .env.example del PR):
-    WHATSAPP_VERIFY_TOKEN, META_APP_SECRET, WHATSAPP_ACCESS_TOKEN,
-    WHATSAPP_PHONE_NUMBER_ID, WHATSAPP_API_VERSION
-"""
-
+"""Webhook firmado de EcoConecta y adaptador conversacional de WhatsApp."""
 from __future__ import annotations
 
 import hashlib
@@ -37,25 +6,24 @@ import hmac
 import json
 import logging
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Annotated
-from uuid import uuid4
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Query, Request
 from fastapi.responses import JSONResponse, PlainTextResponse
-from sqlalchemy import select
+from sqlalchemy import text
 from sqlalchemy.orm import Session
+from starlette.concurrency import run_in_threadpool
 
 from backend import services
-from backend.db import get_session
-from backend.models import Conversacion, MensajeWhatsapp, Usuario
+from backend.db import engine
+from backend import notificaciones_whatsapp as outbox, whatsapp_meta as meta
+from backend.whatsapp_meta import descargar_imagen
+from backend.models import Conversacion, MensajeWhatsapp, Notificacion, Usuario
 
 logger = logging.getLogger("ecoreciclar.whatsapp")
 
 router = APIRouter(prefix="/webhooks", tags=["whatsapp"])
-
-DB = Annotated[Session, Depends(get_session)]
 
 MENSAJE_MENU = (
     "Hola, soy el asistente de EcoConecta 360 en Villas de San Pablo.\n"
@@ -94,6 +62,8 @@ class MensajeEntrante:
     media_id: str | None = None
     mime_type: str | None = None
     titulo_boton: str | None = None
+    fecha_meta: datetime | None = None
+    analisis_imagen: object = field(default=None, repr=False)
 
 
 # ----------------------------- seguridad ------------------------------------
@@ -114,37 +84,55 @@ def verificar_firma(cuerpo: bytes, firma_recibida: str | None) -> bool:
         "sha256="
         + hmac.new(secreto.encode("utf-8"), cuerpo, hashlib.sha256).hexdigest()
     )
-    return hmac.compare_digest(esperada, firma_recibida or "")
+    return hmac.compare_digest(esperada.encode(), (firma_recibida or "").encode())
 
 
 # ----------------------------- parser ----------------------------------------
 
 
-def extraer_mensajes(payload: dict) -> list[MensajeEntrante]:
-    """Extrae los mensajes de usuario de un payload de webhook de Meta.
+def _lista(objeto, clave):
+    valor = objeto.get(clave, [])
+    if not isinstance(valor, list) or any(not isinstance(x, dict) for x in valor):
+        raise ValueError("Lista inválida")
+    return valor
 
-    Los recibos de estado (sent/delivered/read) no traen la clave 'messages'
-    y por tanto se ignoran silenciosamente.
-    """
-    mensajes: list[MensajeEntrante] = []
-    for entrada in payload.get("entry", []):
-        for cambio in entrada.get("changes", []):
-            if cambio.get("field") != "messages":
-                continue
-            for crudo in cambio.get("value", {}).get("messages", []):
-                interactivo = (crudo.get("interactive") or {}).get("button_reply") or {}
-                boton = crudo.get("button") or {}
-                mensajes.append(
-                    MensajeEntrante(
-                        wa_id=crudo.get("from", ""),
-                        mensaje_id=crudo.get("id", ""),
-                        tipo=crudo.get("type", "otros"),
-                        texto=(crudo.get("text") or {}).get("body"),
-                        media_id=(crudo.get("image") or {}).get("id"),
-                        mime_type=(crudo.get("image") or {}).get("mime_type"),
-                        titulo_boton=interactivo.get("title") or boton.get("text"),
-                    )
+
+def _valores(payload):
+    for entrada in _lista(payload, "entry"):
+        for cambio in _lista(entrada, "changes"):
+            if cambio.get("field") == "messages":
+                valor = cambio["value"]
+                telefono = os.getenv("WHATSAPP_PHONE_NUMBER_ID")
+                if not telefono or valor.get("metadata", {}).get("phone_number_id") == telefono:
+                    yield valor
+
+
+def _fecha_meta(valor):
+    if valor is None:
+        return None
+    fecha = datetime.fromtimestamp(int(valor), timezone.utc)
+    return min(fecha, datetime.now(timezone.utc))
+
+
+def extraer_mensajes(payload: dict) -> list[MensajeEntrante]:
+    """Extrae mensajes de usuario del número configurado."""
+    mensajes = []
+    for valor in _valores(payload):
+        for crudo in _lista(valor, "messages"):
+            interactivo = (crudo.get("interactive") or {}).get("button_reply") or {}
+            boton = crudo.get("button") or {}
+            mensajes.append(
+                MensajeEntrante(
+                    wa_id=crudo.get("from", ""),
+                    mensaje_id=crudo.get("id", ""),
+                    tipo=crudo.get("type", "otros"),
+                    fecha_meta=_fecha_meta(crudo.get("timestamp")),
+                    texto=(crudo.get("text") or {}).get("body"),
+                    media_id=(crudo.get("image") or {}).get("id"),
+                    mime_type=(crudo.get("image") or {}).get("mime_type"),
+                    titulo_boton=interactivo.get("title") or boton.get("text"),
                 )
+            )
     return mensajes
 
 
@@ -152,86 +140,11 @@ def extraer_mensajes(payload: dict) -> list[MensajeEntrante]:
 
 
 def enviar_texto(wa_id: str, texto: str) -> str | None:
-    """Envía texto vía Graph API y devuelve el id de Meta, o None si no se pudo.
-
-    Un fallo de envío NO lanza excepción hacia el flujo conversacional: se
-    registra en el log y devuelve None (T27: el envío fallido no pierde la
-    solicitud). Sin credenciales degrada con aviso claro (modo local sin Meta).
-    """
-    import httpx
-
-    token = os.getenv("WHATSAPP_ACCESS_TOKEN") or None
-    telefono_id = os.getenv("WHATSAPP_PHONE_NUMBER_ID") or None
-    version = os.getenv("WHATSAPP_API_VERSION") or "v22.0"
-    if not token or not telefono_id:
-        logger.warning(
-            "Credenciales de WhatsApp sin configurar; no se envía mensaje a %s "
-            "(modo local sin Meta).",
-            wa_id,
-        )
-        return None
-    url = f"https://graph.facebook.com/{version}/{telefono_id}/messages"
-    carga = {
-        "messaging_product": "whatsapp",
-        "recipient_type": "individual",
-        "to": wa_id,
-        "type": "text",
-        "text": {"preview_url": False, "body": texto},
-    }
+    """Interfaz compatible para los consumidores del transporte."""
     try:
-        with httpx.Client(timeout=15) as cliente:
-            respuesta = cliente.post(
-                url, headers={"Authorization": f"Bearer {token}"}, json=carga
-            )
-            respuesta.raise_for_status()
-            datos = respuesta.json()
-        mensajes = datos.get("messages") or [{}]
-        return mensajes[0].get("id")
-    except Exception as error:  # noqa: BLE001 - el bot nunca debe caer por un envío
-        logger.error("Fallo enviando texto a %s: %s", wa_id, error)
-        return None
-
-
-def descargar_imagen(media_id: str) -> bytes | None:
-    """Descarga una imagen por su media_id (se conecta en la Fase 6, IA).
-
-    Valida MIME (jpeg/png/webp) y un máximo de 5 MB. Devuelve None ante
-    cualquier problema; nunca lanza hacia el flujo conversacional.
-    """
-    import httpx
-
-    token = os.getenv("WHATSAPP_ACCESS_TOKEN") or None
-    version = os.getenv("WHATSAPP_API_VERSION") or "v22.0"
-    if not token:
-        logger.warning(
-            "WHATSAPP_ACCESS_TOKEN sin configurar; no se baja la imagen %s.", media_id
-        )
-        return None
-    try:
-        with httpx.Client(timeout=30) as cliente:
-            info_resp = cliente.get(
-                f"https://graph.facebook.com/{version}/{media_id}",
-                headers={"Authorization": f"Bearer {token}"},
-            )
-            info_resp.raise_for_status()
-            info = info_resp.json()
-            if info.get("mime_type") not in {"image/jpeg", "image/png", "image/webp"}:
-                logger.warning(
-                    "MIME no aceptado (%s) para la imagen %s.",
-                    info.get("mime_type"),
-                    media_id,
-                )
-                return None
-            if int(info.get("file_size") or 0) > 5 * 1024 * 1024:
-                logger.warning("Imagen %s supera 5 MB; se rechaza.", media_id)
-                return None
-            archivo = cliente.get(
-                info["url"], headers={"Authorization": f"Bearer {token}"}
-            )
-            archivo.raise_for_status()
-            return archivo.content
-    except Exception as error:  # noqa: BLE001
-        logger.error("Fallo descargando la imagen %s: %s", media_id, error)
+        return meta.enviar(wa_id, meta.texto(texto))
+    except meta.ErrorMeta as error:
+        logger.warning("Fallo de envío: %s", error)
         return None
 
 
@@ -271,36 +184,27 @@ def responder(
 # --------------------- procesamiento en la transacción ------------------------
 
 
-def procesar_mensaje(
-    session: Session, mensaje: MensajeWhatsapp, usuario: Usuario
-) -> None:
-    """Ejecuta los efectos de un mensaje registrado, en la transacción en curso.
+def procesar_evento(session, usuario, conversacion, evento) -> list[str]:
+    """Stub de Emma. Conserva las respuestas del piloto."""
+    mensaje = MensajeWhatsapp(tipo=TIPOS.get(evento.tipo, "otros"),
+                              contenido=evento.texto or evento.titulo_boton)
+    return [responder(mensaje, conversacion, usuario)]
 
-    Según docs/arquitectura.md: registrar, ejecutar efectos y marcar
-    'procesado' quedan en una sola transacción. El llamador envuelve esta
-    función en un SAVEPOINT: si algo falla, se revierte solo este mensaje y la
-    fila queda 'pendiente' para el worker de reintento (recibir no implica
-    procesar; un error transitorio nunca se marca como 'fallido').
-    """
-    conversacion = session.get(Conversacion, mensaje.conversacion_id)
-    respuesta = responder(mensaje, conversacion, usuario)
-    id_meta_salida = enviar_texto(usuario.whatsapp_id or "", respuesta)
-    session.add(
-        MensajeWhatsapp(
-            conversacion_id=conversacion.id,
-            meta_message_id=id_meta_salida or f"saliente-sin-entrega-{uuid4().hex}",
-            direccion="saliente",
-            tipo="texto",
-            contenido=respuesta,
-            estado_envio="enviado" if id_meta_salida else "fallido",
-        )
-    )
+
+def procesar_mensaje(session, mensaje, usuario, evento=None, chatbot=procesar_evento):
+    conversacion = session.get(Conversacion, mensaje.conversacion_id, with_for_update=True)
+    if evento is None:
+        tipo = {"texto": "text", "imagen": "image", "respuesta": "button"}.get(mensaje.tipo, "otros")
+        evento = MensajeEntrante(usuario.whatsapp_id, mensaje.meta_message_id, tipo, texto=mensaje.contenido)
+    respuestas = chatbot(session, usuario, conversacion, evento)
+    if not isinstance(respuestas, list) or any(not isinstance(r, str) or not r for r in respuestas):
+        raise ValueError("Respuesta del chatbot inválida")
+    notas = [Notificacion(usuario_id=usuario.id, tipo="respuesta", mensaje=r) for r in respuestas]
+    session.add_all(notas)
     mensaje.estado_procesamiento = "procesado"
     conversacion.fecha_actualizacion = datetime.now(timezone.utc)
     session.flush()
-
-
-# ----------------------------- endpoints -------------------------------------
+    return [n.id for n in notas]
 
 
 @router.get("/whatsapp")
@@ -314,58 +218,104 @@ def verificar_webhook(
     if (
         hub_mode == "subscribe"
         and esperado
-        and hmac.compare_digest(hub_verify_token, esperado)
+        and hub_challenge
+        and hmac.compare_digest(hub_verify_token.encode(), esperado.encode())
     ):
         return PlainTextResponse(content=hub_challenge, status_code=200)
     return JSONResponse(status_code=403, content={"detail": "Verificación rechazada"})
 
 
-@router.post("/whatsapp")
-async def recibir_eventos(request: Request, session: DB):
-    """Recibe eventos firmados de Meta y procesa cada mensaje con SAVEPOINT.
+def _procesar_registrado(bind, mid, uid, evento, chatbot, analizar):
+    with bind.connect() as conexion:
+        # Un análisis puede tardar más que el reintento del webhook. Este bloqueo
+        # de sesión sobre el id interno sobrevive al commit durante la E/S.
+        llave = {"id": -mid}
+        with conexion.begin():
+            if not conexion.scalar(text("SELECT pg_try_advisory_lock(:id)"), llave):
+                raise RuntimeError("Evento en curso")
+        try:
+            with Session(conexion) as sesion:
+                if sesion.get(MensajeWhatsapp, mid).estado_procesamiento == "procesado":
+                    return []
+            if evento.tipo == "image" and evento.media_id and analizar:
+                datos = descargar_imagen(evento.media_id)
+                if datos is not None:
+                    evento.analisis_imagen = analizar(datos, meta.mime_imagen(datos))
+            with Session(conexion) as sesion, sesion.begin():
+                mensaje = sesion.get(MensajeWhatsapp, mid, with_for_update=True)
+                return procesar_mensaje(sesion, mensaje, sesion.get(Usuario, uid), evento, chatbot)
+        finally:
+            try:
+                with conexion.begin():
+                    conexion.execute(text("SELECT pg_advisory_unlock(:id)"), llave)
+            except Exception:
+                conexion.invalidate()
+                raise
 
-    La deduplicación real es la unicidad de meta_message_id en la base,
-    garantizada por services.register_verified_message (probada por Ángel con
-    concurrencia en test_concurrent_message_delivery).
-    """
+
+def _procesar_lote(bind, eventos, recibos, chatbot, analizar):
+    nuevos = 0
+    pendiente = False
+    with Session(bind) as session, session.begin():
+        for recibo in recibos:
+            outbox.registrar_estado(session, recibo)
+    for evento in eventos:
+        if not evento.mensaje_id or not evento.wa_id:
+            continue
+        with Session(bind) as session, session.begin():
+            try:
+                usuario, mensaje, creado = services.register_verified_message(
+                    session, evento.wa_id, evento.mensaje_id, TIPOS.get(evento.tipo, "otros"))
+            except ValueError:
+                logger.warning("Identidad de mensaje rechazada")
+                continue
+            if mensaje.direccion != "entrante" or mensaje.estado_procesamiento == "procesado":
+                continue
+            if creado:
+                mensaje.contenido = evento.texto or evento.titulo_boton
+                mensaje.fecha_meta = evento.fecha_meta
+                nuevos += 1
+            mid, uid = mensaje.id, usuario.id
+        try:
+            notas = _procesar_registrado(bind, mid, uid, evento, chatbot, analizar)
+            for nota_id in notas:
+                outbox.despachar(bind, nota_id)
+        except Exception:
+            pendiente = True
+    if pendiente:
+        raise RuntimeError("Lote con eventos pendientes")
+    return nuevos
+
+
+@router.post("/whatsapp")
+async def recibir_eventos(request: Request):
     cuerpo = await request.body()
     if not verificar_firma(cuerpo, request.headers.get("X-Hub-Signature-256")):
         return JSONResponse(status_code=403, content={"detail": "Firma inválida"})
     try:
         payload = json.loads(cuerpo)
-    except json.JSONDecodeError:
-        return JSONResponse(status_code=400, content={"detail": "JSON inválido"})
-    if not isinstance(payload, dict):
-        return JSONResponse(status_code=400, content={"detail": "JSON inválido"})
-
-    nuevos = 0
-    for evento in extraer_mensajes(payload):
-        if not evento.mensaje_id or not evento.wa_id:
-            continue
-        try:
-            usuario, mensaje, creado = services.register_verified_message(
-                session,
-                evento.wa_id,
-                evento.mensaje_id,
-                TIPOS.get(evento.tipo, "otros"),
-            )
-        except ValueError as error:
-            # p. ej. meta_message_id ya vinculado a otra identidad: se rechaza
-            # este mensaje y se aceptan los demás del mismo lote.
-            logger.warning("Mensaje %s rechazado: %s", evento.mensaje_id, error)
-            continue
-        if not creado:
-            continue  # T04: reintentos de Meta no reprocesan
-        # Contenido mínimo para contexto conversacional; None para imágenes.
-        mensaje.contenido = evento.texto or evento.titulo_boton
-        session.flush()
-        try:
-            with session.begin_nested():  # SAVEPOINT: aísla el fallo de este mensaje
-                procesar_mensaje(session, mensaje, usuario)
-        except Exception:  # noqa: BLE001
-            logger.exception(
-                "Fallo procesando %s; queda pendiente para reintento del worker",
-                evento.mensaje_id,
-            )
-        nuevos += 1
+        if not isinstance(payload, dict) or "entry" not in payload:
+            raise ValueError
+        eventos = extraer_mensajes(payload)
+        recibos = [r for v in _valores(payload) for r in _lista(v, "statuses")]
+        for r in recibos:
+            if not all(isinstance(r.get(k, ""), str) for k in ("id", "status", "biz_opaque_callback_data")):
+                raise ValueError
+        for e in eventos:
+            if not all(isinstance(x, str) for x in (e.wa_id, e.mensaje_id, e.tipo)):
+                raise ValueError
+            if len(e.wa_id) > 64 or len(e.mensaje_id) > 255 or any(
+                x is not None and not isinstance(x, str) for x in (e.texto, e.media_id, e.mime_type, e.titulo_boton)
+            ):
+                raise ValueError
+    except (ValueError, TypeError, AttributeError, KeyError, OverflowError, OSError):
+        return JSONResponse(status_code=400, content={"detail": "Evento inválido"})
+    try:
+        nuevos = await run_in_threadpool(
+            _procesar_lote, engine(), eventos, recibos,
+            getattr(request.app.state, "procesar_evento", procesar_evento),
+            getattr(request.app.state, "analizar_imagen", None))
+    except Exception:
+        logger.error("Procesamiento pendiente de reintento")
+        return JSONResponse(status_code=503, content={"detail": "Reintentar evento"})
     return {"success": True, "nuevos": nuevos}

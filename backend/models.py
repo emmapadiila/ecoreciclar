@@ -226,6 +226,9 @@ class MensajeWhatsapp(Base):
     id = pk()
     conversacion_id = Column(ForeignKey("conversaciones.id"), nullable=False, comment="Conversación a la que pertenece")
     meta_message_id = Column(String(255), nullable=False, unique=True, comment="ID externo único; clave de idempotencia")
+    notificacion_id = Column(ForeignKey("notificaciones.id"), index=True)
+    error_envio = Column(String(80))
+    fecha_meta = Column(DateTime(timezone=True))
     direccion = Column(String(15), nullable=False, comment="Sentido del mensaje")
     tipo = Column(String(30), nullable=False, comment="Texto, imagen o respuesta")
     contenido = Column(Text, comment="Contenido privado mínimo con retención limitada")
@@ -234,7 +237,7 @@ class MensajeWhatsapp(Base):
     fecha = timestamp()
     __table_args__ = (
         CheckConstraint("direccion IN ('entrante','saliente')", name="direccion"),
-        CheckConstraint("estado_envio IN ('pendiente','enviado','entregado','fallido')", name="envio"),
+        CheckConstraint("estado_envio IN ('pendiente','enviado','entregado','fallido','incierto','leido')", name="envio"),
         CheckConstraint("estado_procesamiento IN ('pendiente','procesado','fallido')", name="proceso"),
     )
 
@@ -267,11 +270,12 @@ class Notificacion(Base):
     tipo = Column(String(50), nullable=False, comment="Evento: programación o cierre")
     mensaje = Column(Text, nullable=False, comment="Contenido mínimo; evitar direcciones en mensajes")
     estado = Column(String(30), nullable=False, server_default="pendiente", comment="Outbox; no implica entrega real")
+    proximo_intento = Column(DateTime(timezone=True))
     intentos = Column(Integer, nullable=False, server_default="0", comment="Cantidad de intentos de envío")
     fecha_creacion = timestamp()
     __table_args__ = (
         UniqueConstraint("solicitud_id", "tipo"),
-        CheckConstraint("estado IN ('pendiente','enviada','fallida')", name="estado"),
+        CheckConstraint("estado IN ('pendiente','enviada','fallida','incierta')", name="estado"),
         CheckConstraint("intentos >= 0", name="intentos"),
         Index("ix_notificaciones_estado_fecha", "estado", "fecha_creacion"),
     )
