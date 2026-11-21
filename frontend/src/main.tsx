@@ -30,6 +30,7 @@ import {
 } from "lucide-react";
 import {
   Access,
+  CreateAccount,
   Education,
   IntakePage,
   Landing,
@@ -124,7 +125,7 @@ function Problem({ kind = "404" }: { kind?: string }) {
     permiso: ["Acceso denegado", "Tu perfil no tiene acceso a esta sección."],
     sesion: [
       "Sesión expirada",
-      "Elige tu perfil de demostración para continuar.",
+      "Inicia sesión nuevamente con tu cuenta registrada.",
     ],
     conexion: [
       "Error de conexión",
@@ -245,7 +246,6 @@ function PanelRoutes() {
           </button>
           <span>Villas de San Pablo</span>
           <div className="actions">
-            <span className="demo-badge">Modo demostración</span>
             {links.some(([s]) => s === "notificaciones") && (
               <Link
                 to={base + "/notificaciones"}
@@ -258,7 +258,7 @@ function PanelRoutes() {
             )}
           </div>
         </header>
-        <main id="contenido" className="workspace">
+        <main id="contenido" className="workspace" key={loc.pathname}>
           <Routes>
             <Route
               index
@@ -400,7 +400,6 @@ function App() {
         Saltar al contenido
       </a>
       <Routes>
-        <Route path="/panel/:role/*" element={<PanelRoutes />} />
         <Route element={<PublicLayout />}>
           <Route index element={<Landing />} />
           <Route path="resultados-diarios" element={<DailyResults />} />
@@ -408,7 +407,12 @@ function App() {
           <Route path="solicitar" element={<IntakePage />} />
           <Route path="consultar" element={<Lookup />} />
           <Route path="acceso" element={<Access />} />
+          <Route path="crear-cuenta" element={<CreateAccount />} />
           <Route path="verificar" element={<Verify />} />
+          <Route path="login" element={<OperationAccess />} />
+          <Route path="admin" element={<OperationPanel />} />
+          <Route path="coordinador" element={<OperationPanel />} />
+          <Route path="residente" element={<OperationPanel />} />
           <Route path="acceso-registrado" element={<OperationAccess />} />
           <Route path="operacion" element={<OperationPanel />} />
           <Route path="operacion/solicitud/:id" element={<OperationPanel />} />

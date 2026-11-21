@@ -328,6 +328,16 @@ td small {
     opacity: 1;
   }
 }
+@keyframes workspace-enter {
+  from {
+    transform: translateY(6px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
 .partners {
   border-block: 1px solid var(--border);
   background: white;
@@ -805,6 +815,7 @@ select:disabled {
   padding: clamp(17px, 3vw, 37px);
   max-width: 1600px;
   margin: auto;
+  animation: workspace-enter 180ms cubic-bezier(0.23, 1, 0.32, 1);
 }
 .workspace .heading h1 {
   font-size: clamp(1.8rem, 3vw, 2.55rem);
@@ -1092,14 +1103,33 @@ dialog {
   color: var(--forest);
   box-shadow: 0 16px 55px #103d2b40;
 }
+dialog[open] {
+  animation: dialog-enter 200ms cubic-bezier(0.23, 1, 0.32, 1);
+}
 dialog::backdrop {
   background: #082418aa;
+  animation: backdrop-enter 160ms ease-out;
+}
+@keyframes dialog-enter {
+  from {
+    transform: translateY(8px) scale(0.97);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0) scale(1);
+    opacity: 1;
+  }
+}
+@keyframes backdrop-enter {
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 dialog .line {
   flex-wrap: nowrap;
 }
 .toast {
   position: fixed;
+  animation: toast-enter 180ms cubic-bezier(0.23, 1, 0.32, 1);
   z-index: 10;
   bottom: 18px;
   right: 18px;
@@ -1109,6 +1139,46 @@ dialog .line {
   padding: 11px 17px;
   border-radius: 10px;
   box-shadow: 0 6px 21px #103d2b40;
+}
+@keyframes toast-enter {
+  from {
+    transform: translateY(8px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+@media (hover: hover) and (pointer: fine) {
+  .sidebar nav a,
+  .side-bottom a,
+  .icon-button,
+  .text-link {
+    transition:
+      background 150ms ease,
+      color 150ms ease,
+      transform 150ms ease;
+  }
+  .btn {
+    transition:
+      background 180ms ease,
+      border-color 180ms ease,
+      box-shadow 180ms ease,
+      transform 100ms ease-out;
+  }
+  .btn:active,
+  .icon-button:active {
+    transform: translateY(1px) scale(0.98);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .workspace,
+  dialog[open],
+  dialog::backdrop,
+  .toast {
+    animation: none;
+  }
 }
 @media (max-width: 1100px) {
   .wrap {

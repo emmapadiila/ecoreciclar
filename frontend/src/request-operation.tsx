@@ -2,10 +2,12 @@ import { useEffect, useState } from "react";
 import { Link, Navigate, useNavigate, useParams } from "react-router-dom";
 import { Check } from "lucide-react";
 import { useDemo } from "./store";
+import { DailyResults } from "./daily-results";
 import { Dialog, Empty, Field, Form, Heading, Panel, value } from "./ui";
 import {
   apiToken, authService, puntosService, recoleccionService, recolectorService,
-  solicitudService, type ServerHistory, type ServerRequest, type ServerRequestDetail,
+  solicitudService, usuarioService, colectivoService,
+  type ServerHistory, type ServerRequest, type ServerRequestDetail,
 } from "./services";
 
 const status: Record<string, string> = {
@@ -45,10 +47,16 @@ const formatTime = (date: string) => new Intl.DateTimeFormat("es-CO", {
 }).format(new Date(date));
 const bogotaNow = () => new Date(Date.now() - 5 * 3600_000).toISOString().slice(0, 16);
 const errorText = (cause: unknown) => cause instanceof Error ? cause.message : "Error de conexión.";
+const panelRoles = {
+  administrador: "Administración",
+  coordinador: "Coordinación",
+  residente: "Residente",
+};
 
 export function OperationAccess() {
   const navigate = useNavigate();
   const { login } = useDemo();
+  const [showPassword, setShowPassword] = useState(false);
   return <div className="wrap section narrow">
     <Heading title="Acceso con cuenta registrada" text="Usa una cuenta autorizada del piloto." />
     <Panel>
@@ -57,8 +65,8 @@ export function OperationAccess() {
         try {
           await authService.login({ correo: value(data, "correo"), password: String(data.get("password") ?? "") });
           const user = await authService.me();
-          if (user.rol !== "coordinador" && user.rol !== "residente")
-            throw Error("Este panel está disponible para coordinación y residentes.");
+          if (!Object.hasOwn(panelRoles, user.rol))
+            throw Error("Este panel está disponible para administración, coordinación y residentes.");
         } catch (error) {
           authService.logout();
           throw error;
@@ -66,10 +74,11 @@ export function OperationAccess() {
         navigate("/operacion", { replace: true });
       }}>
         <Field label="Correo"><input name="correo" type="email" required autoComplete="username" /></Field>
-        <Field label="Contraseña"><input name="password" type="password" required autoComplete="current-password" /></Field>
+        <Field label="Contraseña"><input name="password" type={showPassword ? "text" : "password"} required autoComplete="current-password" /></Field>
+        <label><input type="checkbox" checked={showPassword} onChange={(event) => setShowPassword(event.target.checked)} /> Mostrar contraseña</label>
       </Form>
     </Panel>
-    <Link className="text-link mt-4" to="/acceso">Explorar con un perfil demo</Link>
+    <Link className="text-link mt-4" to="/crear-cuenta">Crear cuenta de residente</Link>
   </div>;
 }
 
@@ -96,20 +105,111 @@ export function OperationPanel() {
     {error && <p role="alert" className="error">{error}</p>}
     {!user && !error && <p role="status">Validando acceso…</p>}
     {user && <>
+      <p className="mb-5"><strong>{user.nombre}</strong> · {Object.hasOwn(panelRoles, user.rol)
+        ? panelRoles[user.rol as keyof typeof panelRoles] : "Sin acceso operativo"}</p>
       <div className="actions mb-5">
-        <Link className="text-link" to="/operacion">Mis solicitudes</Link>
+        <Link className="text-link" to="/operacion">{user.rol === "administrador" ? "Resultados del piloto"
+          : user.rol === "coordinador" ? "Solicitudes del colectivo" : "Mis solicitudes"}</Link>
         {user.rol === "residente" && <Link className="text-link" to="/solicitar">Solicitar recolección</Link>}
         <button type="button" className="btn secondary" onClick={() => {
           authService.logout();
           navigate("/acceso-registrado", { replace: true });
         }}>Cerrar sesión</button>
       </div>
-      {user.rol !== "coordinador" && user.rol !== "residente"
+      {!Object.hasOwn(panelRoles, user.rol)
         ? <p role="alert">Este perfil no tiene acceso al panel de operación.</p>
+        : user.rol === "administrador"
+          ? id ? <p role="alert">El perfil administrador supervisa resultados; las solicitudes son gestionadas por el colectivo.</p>
+            : <><AdminUsers /><DailyResults allowDemoFallback={false} /></>
         : id ? <OperationDetail key={id} id={id} manage={user.rol === "coordinador"} />
         : <OperationList resident={user.rol === "residente"} />}
     </>}
   </div>;
+}
+
+function AdminUsers() {
+  const [users, setUsers] = useState<Array<Record<string, unknown>>>([]);
+  const [collectives, setCollectives] = useState<Array<{ id: number; nombre: string }>>([]);
+  const [error, setError] = useState("");
+  const [createOpen, setCreateOpen] = useState(false);
+  const [refresh, setRefresh] = useState(0);
+  useEffect(() => {
+    let active = true;
+    setError("");
+    Promise.all([usuarioService.list(), colectivoService.list()])
+      .then(([people, groups]) => {
+        if (active) {
+          setUsers(people as Array<Record<string, unknown>>);
+          setCollectives(groups.map((item) => ({ id: item.id, nombre: item.nombre })));
+        }
+      })
+      .catch((cause) => { if (active) setError(errorText(cause)); });
+    return () => { active = false; };
+  }, [refresh]);
+  async function create(data: FormData) {
+    const password = String(data.get("password") ?? "");
+    await usuarioService.create({
+      nombre: value(data, "nombre"),
+      correo: value(data, "correo"),
+      password,
+      confirm_password: password,
+      telefono: value(data, "telefono") || undefined,
+      direccion: value(data, "direccion") || undefined,
+      tipo_generador: value(data, "tipo_generador"),
+      rol: value(data, "rol"),
+      activo: data.has("activo"),
+      piloto_habilitado: data.has("piloto_habilitado"),
+      colectivo_id: value(data, "colectivo_id") ? Number(value(data, "colectivo_id")) : undefined,
+    });
+    setCreateOpen(false);
+    setRefresh((count) => count + 1);
+  }
+  async function togglePilot(id: number, enabled: boolean) {
+    await usuarioService.update(id, { piloto_habilitado: enabled });
+    setRefresh((count) => count + 1);
+  }
+  async function toggleActive(id: number, enabled: boolean) {
+    await usuarioService.update(id, { activo: enabled });
+    setRefresh((count) => count + 1);
+  }
+  return <>
+    <Heading title="Usuarios registrados" text="Administración de residentes, coordinadores y cuentas administrativas." />
+    <div className="actions mb-5"><button type="button" className="btn primary" onClick={() => setCreateOpen(true)}>Crear usuario</button></div>
+    {error && <p role="alert" className="error">{error}</p>}
+    <Panel>
+      {!users.length && !error ? <p role="status">Cargando usuarios…</p> :
+        <div className="table-wrap"><table><thead><tr><th>Nombre</th><th>Correo</th><th>Rol</th><th>Estado</th><th>Piloto</th><th>Acciones</th></tr></thead>
+          <tbody>{users.map((person) => <tr key={String(person.id)}>
+            <td>{String(person.nombre)}</td><td>{String(person.correo ?? "—")}</td><td>{String(person.rol)}</td>
+            <td>{person.activo ? "Activo" : "Inactivo"}</td>
+            <td>{person.piloto_habilitado ? "Habilitado" : "Pendiente"}</td>
+            <td><div className="actions">
+              {person.rol === "residente" && <button type="button" className="text-link" onClick={() => togglePilot(Number(person.id), !Boolean(person.piloto_habilitado))}>
+                {person.piloto_habilitado ? "Retirar piloto" : "Habilitar piloto"}</button>}
+              <button type="button" className="text-link" onClick={() => toggleActive(Number(person.id), !Boolean(person.activo))}>
+                {person.activo ? "Desactivar" : "Activar"}</button>
+            </div></td>
+          </tr>)}</tbody></table></div>}
+    </Panel>
+    {createOpen && <Dialog title="Crear usuario" onClose={() => setCreateOpen(false)}>
+      <Form label="Crear usuario" onSave={create}>
+        <Field label="Nombre completo"><input name="nombre" required minLength={2} maxLength={120} /></Field>
+        <Field label="Correo"><input name="correo" type="email" required /></Field>
+        <Field label="Contraseña inicial"><input name="password" type="password" required minLength={12} /></Field>
+        <Field label="Teléfono"><input name="telefono" maxLength={20} /></Field>
+        <Field label="Dirección"><input name="direccion" maxLength={1000} /></Field>
+        <Field label="Tipo de generador">
+          <select name="tipo_generador" defaultValue="hogar"><option value="hogar">Hogar</option><option value="negocio">Negocio</option></select>
+        </Field>
+        <Field label="Rol">
+          <select name="rol" defaultValue="residente"><option value="residente">Residente</option><option value="coordinador">Coordinador</option></select>
+        </Field>
+        <Field label="Colectivo"><select name="colectivo_id" defaultValue=""><option value="">Sin colectivo</option>{collectives.map((item) => <option key={item.id} value={item.id}>{item.nombre}</option>)}</select></Field>
+        <label><input type="checkbox" name="activo" defaultChecked /> Activo</label>
+        <label><input type="checkbox" name="piloto_habilitado" /> Habilitado para el piloto</label>
+      </Form>
+    </Dialog>}
+  </>;
 }
 
 function OperationList({ resident }: { resident: boolean }) {
