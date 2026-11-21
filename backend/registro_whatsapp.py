@@ -5,10 +5,7 @@ BIENVENIDA = (
     "¡Hola! Bienvenido a EcoConecta 360. ♻️ Te ayudamos a gestionar tus residuos "
     "aprovechables. Para comenzar, vamos a verificar si ya estás registrado."
 )
-SIN_AUTORIZACION = (
-    "Tu registro está guardado, pero la administración debe habilitarte en el piloto "
-    "antes de que puedas crear solicitudes o consultar datos privados."
-)
+CUENTA_INACTIVA = "Tu cuenta no está activa. Comunícate con la administración de EcoConecta."
 PREGUNTAS = {
     "registro_nombre": "¿Cuál es tu nombre completo?",
     "registro_perfil": "¿Qué tipo de participante eres? 1. Hogar · 2. Negocio.",

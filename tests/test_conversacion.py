@@ -30,7 +30,7 @@ def charla(database):
     return enviar
 
 
-def test_registro_nuevo_y_piloto_desactivado(database, charla):
+def test_registro_nuevo_habilitado_automaticamente(database, charla):
     def nuevo(texto):
         return charla(texto, remitente="DEMO-NUEVO")
 
@@ -46,12 +46,12 @@ def test_registro_nuevo_y_piloto_desactivado(database, charla):
         user = session.scalar(select(Usuario).where(Usuario.whatsapp_id == "DEMO-NUEVO"))
         assert user.direccion is None
     assert "Registro básico guardado" in nuevo("confirmar registro")[1]
-    assert "debe habilitarte" in nuevo("Solicitar recolección")[1]
-    assert "debe habilitarte" in nuevo("Consultar mis puntos")[1]
+    assert "Saldo acumulado" in nuevo("Consultar mis puntos")[1]
+    assert nuevo("Solicitar recolección")[0] == "tipo"
     with Session(database) as session:
         user = session.scalar(select(Usuario).where(Usuario.whatsapp_id == "DEMO-NUEVO"))
         assert (user.nombre, user.tipo_generador, user.direccion, user.piloto_habilitado) == (
-            "Ana Ejemplo", "negocio", "Calle de prueba 12", False,
+            "Ana Ejemplo", "negocio", "Calle de prueba 12", True,
         )
 
 
@@ -77,7 +77,7 @@ def test_inactivo_y_direccion_actualizada(database, charla):
         user = session.scalar(select(Usuario).where(Usuario.whatsapp_id == "DEMO-WA-REC"))
         assert user.direccion == "Calle de prueba 21"
         user.activo = False
-    assert "no está habilitada" in charla("2")[1]
+    assert "no está activa" in charla("2")[1]
 
 
 def test_borrador_persistente_y_caducidad(database, charla):

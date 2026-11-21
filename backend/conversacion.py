@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 import re
 from typing import TYPE_CHECKING
@@ -41,23 +42,47 @@ CAPTURA_FOTO = {"tipo", "metodo", "espera_imagen", "materiales"}
 CADUCIDAD = timedelta(hours=24)
 
 
+def etiqueta_material(nombre):
+    return re.sub(r"^DEMO\s+", "", nombre, flags=re.IGNORECASE)
+
+
 def resumen_foto(analisis):
     if not analisis or analisis["estado"] != "completado":
         return "No pude analizar la foto. Puedes reenviarla o describir el residuo por texto."
 
     residuos = analisis["residuos"]
-    lineas = []
-    for categoria, etiqueta in (("organico", "orgánico"), ("reciclable", "aprovechable")):
-        grupo = [item for item in residuos if item["categoria"] == categoria]
-        if grupo:
-            materiales = list(dict.fromkeys(item["material"] for item in grupo if item.get("material")))
-            detalle = f" ({', '.join(materiales[:5])})" if materiales else ""
-            lineas.append(f"• {len(grupo)} de tipo {etiqueta}{detalle}")
-    mensaje = "En la foto parece haber:\n" + "\n".join(lineas) if lineas else ""
+    lineas, consejos = [], []
+    for categoria, etiqueta in (("organico", "Orgánico"), ("reciclable", "Aprovechable")):
+        detalles = Counter()
+        for item in residuos:
+            if item["categoria"] != categoria:
+                continue
+            nombre = etiqueta_material((item.get("nombre") or "").strip())
+            material = etiqueta_material((item.get("material") or "").strip())
+            if material and (nombre.casefold() == "material por identificar"
+                             or material.casefold().startswith(nombre.casefold() + " ")):
+                nombre = ""
+            detalle = nombre or material or "Material sin identificar"
+            if nombre and material and nombre.casefold() != material.casefold():
+                detalle += f" ({material})"
+            detalles[detalle] += 1
+            consejo = item.get("recomendacion")
+            if consejo and consejo != "Confirma el material antes de solicitar su recogida.":
+                consejos.append(consejo)
+        if detalles:
+            principales = detalles.most_common(3)
+            tipos = [f"{nombre} ×{cantidad}" if cantidad > 1 else nombre for nombre, cantidad in principales]
+            restantes = detalles.total() - sum(cantidad for _, cantidad in principales)
+            if restantes:
+                tipos.append(f"{restantes} más")
+            lineas.append(f"• {etiqueta}: {', '.join(tipos)}")
     if not lineas:
         return "No pude identificar el residuo con claridad. Envía otra foto o describe el material por texto."
+    mensaje = "Esto es lo que pude identificar en la foto:\n" + "\n".join(lineas)
+    if consejos:
+        mensaje += "\n\nCómo separarlo: " + " ".join(list(dict.fromkeys(consejos))[:2])
     if any(item["categoria"] not in CATEGORIAS for item in residuos):
-        return mensaje + "\nHay objetos dudosos. Envía otra foto o describe el material por texto."
+        return mensaje + "\n\nHay objetos que no pude clasificar. Envía otra foto o describe esos materiales por texto."
     return mensaje
 
 
@@ -189,11 +214,13 @@ def procesar_evento(session: Session, usuario: Usuario, conversacion: Conversaci
 
     texto = " ".join((evento.texto or evento.titulo_boton or "").split())
     opcion = normalizar(texto) if len(texto) <= 2000 else ""
-    if not usuario.activo or usuario.rol != "residente":
+    if not usuario.activo:
+        return responder("inicio", {}, registro.CUENTA_INACTIVA)
+    if usuario.rol != "residente":
         return responder("inicio", {}, "Esta cuenta no está habilitada para usar el asistente de residentes.")
     foto = evento.tipo in ("image", "imagen")
     analisis = getattr(evento, "analisis_imagen", None)
-    if foto and (estado not in CAPTURA_FOTO or not registro.registrado(usuario) or not usuario.piloto_habilitado):
+    if foto and (estado not in CAPTURA_FOTO or not registro.registrado(usuario)):
         mensaje = resumen_foto(analisis)
         if estado in ("inicio", "menu"):
             mensaje += "\nEscribe «Hola» para usar el asistente."
@@ -212,20 +239,15 @@ def procesar_evento(session: Session, usuario: Usuario, conversacion: Conversaci
         if estado in (*registro.PREGUNTAS, "registro_confirmacion"):
             nuevo, borrador, mensaje = registro.avanzar(usuario, estado, datos, texto, opcion)
             if nuevo == "menu":
-                return responder("menu", {}, mensaje, MENU if usuario.piloto_habilitado else registro.SIN_AUTORIZACION)
+                return responder("menu", {}, mensaje, MENU)
             return responder(nuevo, borrador, mensaje)
         return responder("registro_nombre", {}, registro.BIENVENIDA, registro.PREGUNTAS["registro_nombre"])
 
-    if not usuario.piloto_habilitado and estado in CAPTURA | {"tipo"}:
-        return responder("menu", {}, registro.SIN_AUTORIZACION, MENU)
     if estado in ("inicio", "menu"):
         if opcion in ("hola", "buenas", "buenos dias", "buenas tardes", "buenas noches"):
             bienvenida = f"¡Hola de nuevo, {usuario.nombre}! Encontré tu registro."
-            return responder("menu", {}, bienvenida, MENU) if usuario.piloto_habilitado else responder(
-                "menu", {}, bienvenida, registro.SIN_AUTORIZACION, MENU)
+            return responder("menu", {}, bienvenida, MENU)
         elegida = opcion_menu(opcion)
-        if elegida in ("1", "2", "3") and not usuario.piloto_habilitado:
-            return responder("menu", {}, registro.SIN_AUTORIZACION, MENU)
         if elegida == "1":
             if not opcion.startswith("tengo "):
                 return responder("tipo", {}, TIPOS)
@@ -255,7 +277,7 @@ def procesar_evento(session: Session, usuario: Usuario, conversacion: Conversaci
         disponibles = catalogo(session)
         categoria = borrador.get("categoria")
         sugeridos = [m for m in disponibles if not categoria or m.categoria == categoria][:20]
-        lista = "\n".join(f"{i}. {material.nombre}" for i, material in enumerate(sugeridos, 1))
+        lista = "\n".join(f"{i}. {etiqueta_material(material.nombre)}" for i, material in enumerate(sugeridos, 1))
         return responder("materiales", {**borrador, "opciones": [m.id for m in sugeridos]},
                          motivo + ("\n" + lista if lista else "\nNo hay opciones de ese tipo en el catálogo."))
 
@@ -272,7 +294,7 @@ def procesar_evento(session: Session, usuario: Usuario, conversacion: Conversaci
                           .where(Colectivo.activo, Colectivo.tipo_flujo.in_(grupos))).all())
         if grupos.keys() - colectivos.keys():
             return ofrecer_materiales(borrador, "Un colectivo no está disponible. Elige otros materiales o cancela.")
-        resumen_materiales = "\n".join(f"{CATEGORIAS[flujo]} · {colectivos[flujo]}: {', '.join(m.nombre for m in items)}"
+        resumen_materiales = "\n".join(f"{CATEGORIAS[flujo]} · {etiqueta_material(colectivos[flujo])}: {', '.join(etiqueta_material(m.nombre) for m in items)}"
                                         for flujo, items in grupos.items())
         mensaje = (f"Resumen de tu solicitud\n{resumen_materiales}\nDirección: {borrador['direccion']}\n"
                    f"Horario preferido (sin confirmar): {borrador['horario']}\n"
@@ -316,11 +338,12 @@ def procesar_evento(session: Session, usuario: Usuario, conversacion: Conversaci
             return ofrecer_materiales(datos)
         if len(encontrados) > 30:
             return ofrecer_materiales(datos, "Selecciona como máximo 30 materiales.")
-        lista = "\n".join(f"• {m.nombre} — {CATEGORIAS[m.categoria]}" for m in encontrados)
+        lista = "\n".join(f"• {etiqueta_material(m.nombre)} — {CATEGORIAS[m.categoria]}" for m in encontrados)
         avisos = " Algunos objetos quedaron fuera del catálogo." if incompleto else ""
         if len(agrupados(encontrados)) > 1:
             avisos += " Al confirmar se crearán solicitudes separadas por colectivo."
-        revision = f"Revisa estos materiales:\n{lista}\n{avisos}\n1. Sí, continuar · 2. Corregir materiales · 3. Cancelar."
+        titulo = "Confirma los materiales para la recolección" if foto else "Revisa estos materiales"
+        revision = f"{titulo}:\n{lista}\n{avisos}\n1. Sí, continuar · 2. Corregir materiales · 3. Cancelar."
         return responder("revision_material", {**datos, "materiales": [m.id for m in encontrados]},
                          f"{resumen_foto(analisis)}\n\n{revision}" if foto else revision)
     if estado == "revision_material":

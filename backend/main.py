@@ -1,3 +1,5 @@
+import asyncio
+import logging
 import os
 from contextlib import asynccontextmanager
 from datetime import date, datetime
@@ -9,35 +11,61 @@ from fastapi import Depends, FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator
-from sqlalchemy import func, select, text
+from sqlalchemy import func, select, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from backend import services
+from backend import notificaciones_whatsapp as outbox, services
 from backend.conversacion import procesar_evento
 from backend.ia_residuos import analizar_imagen
 from backend.whatsapp import router as whatsapp_router
 from backend.auth import auth_secret, current_user, hash_password, issue_token, verify_password
-from backend.db import database_url, get_session
+from backend.db import database_url, engine, get_session
 from backend.models import (
     Colectivo,
+    Conversacion,
     CoordinadorColectivo,
     EventoSolicitud,
     HistorialEstado,
     Material,
+    MensajeWhatsapp,
     MovimientoPuntos,
+    Notificacion,
     Recoleccion,
+    ReglaPuntos,
     Recolector,
     SolicitudMaterial,
     Usuario,
 )
+
+logger = logging.getLogger(__name__)
+USUARIO_ELIMINADO = "Usuario eliminado"
+
+
+def usuario_eliminado(user: Usuario):
+    return user.nombre == USUARIO_ELIMINADO and not user.activo and not user.correo and not user.whatsapp_id
+
+
+async def despachar_outbox(segundos: float):
+    # Envía por WhatsApp los avisos que crea el panel (programación, cierre con EcoPuntos).
+    bind = engine()
+    while True:
+        try:
+            await asyncio.to_thread(outbox.procesar_pendientes, bind)
+        except Exception:
+            logger.exception("Fallo al despachar notificaciones pendientes")
+        await asyncio.sleep(segundos)
 
 
 @asynccontextmanager
 async def lifespan(app):
     database_url()  # Cargar configuración, fallar antes de servir con secreto débil.
     auth_secret()
+    intervalo = float(os.getenv("OUTBOX_INTERVALO", "0") or 0)
+    tarea = asyncio.create_task(despachar_outbox(intervalo)) if intervalo > 0 else None
     yield
+    if tarea:
+        tarea.cancel()
 
 
 app = FastAPI(title="EcoConecta 360 — API de referencia", lifespan=lifespan)
@@ -50,7 +78,7 @@ if cors_origins:
         CORSMiddleware,
         allow_origins=cors_origins,
         allow_credentials=True,
-        allow_methods=["GET", "POST", "PATCH", "OPTIONS"],
+        allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
         allow_headers=["Authorization", "Content-Type"],
     )
 DB = Annotated[Session, Depends(get_session)]
@@ -217,7 +245,7 @@ def register(data: RegisterInput, session: DB):
         tipo_generador=data.tipo_generador,
         rol="residente",
         activo=True,
-        piloto_habilitado=False,
+        piloto_habilitado=True,
         password_hash=hash_password(data.password),
     )
     session.add(user)
@@ -259,6 +287,56 @@ def require_admin(user: Usuario):
         raise HTTPException(403, "Se requiere administrador")
 
 
+class ReglaPuntosInput(BaseModel):
+    colectivo_id: int = Field(gt=0)
+    puntos_por_kg: Decimal = Field(ge=0, le=100, decimal_places=2)
+    fecha_inicio: AwareDatetime | None = None
+
+
+def regla_output(rule: ReglaPuntos):
+    return {"id": rule.id, "colectivo_id": rule.colectivo_id, "puntos_por_kg": str(rule.puntos_por_kg),
+            "fecha_inicio": rule.fecha_inicio, "fecha_fin": rule.fecha_fin}
+
+
+@app.get("/reglas-puntos")
+def list_points_rules(session: DB, user: User):
+    require_admin(user)
+    now = services.current_time()
+    rules = session.scalars(select(ReglaPuntos).where(ReglaPuntos.aprobada,
+        (ReglaPuntos.fecha_fin.is_(None)) | (ReglaPuntos.fecha_fin > now),
+    ).order_by(ReglaPuntos.colectivo_id, ReglaPuntos.fecha_inicio))
+    return [regla_output(rule) for rule in rules]
+
+
+@app.post("/reglas-puntos", status_code=201)
+def publish_points_rule(data: ReglaPuntosInput, session: DB, user: User):
+    require_admin(user)
+    if not user.piloto_habilitado:
+        raise HTTPException(403, "Se requiere un administrador habilitado para aprobar tarifas")
+    collective = session.scalar(select(Colectivo).where(Colectivo.id == data.colectivo_id,
+                                                        Colectivo.activo).with_for_update())
+    if collective is None:
+        raise HTTPException(404, "Colectivo activo no encontrado")
+    now = session.scalar(select(func.clock_timestamp()))
+    start = data.fecha_inicio or now
+    if start < now:
+        raise HTTPException(422, "Elige una fecha futura o aplica la tarifa desde ahora")
+    latest = session.scalar(select(ReglaPuntos).where(ReglaPuntos.aprobada,
+        ReglaPuntos.colectivo_id == collective.id,
+    ).order_by(ReglaPuntos.fecha_inicio.desc()).limit(1))
+    if latest and latest.fecha_inicio >= start:
+        raise HTTPException(409, "Elige una fecha posterior a la última tarifa programada")
+    services.set_actor(session, user.id)
+    if latest and (latest.fecha_fin is None or latest.fecha_fin > start):
+        latest.fecha_fin = start
+        session.flush()
+    rule = ReglaPuntos(colectivo_id=collective.id, puntos_por_kg=data.puntos_por_kg,
+                      fecha_inicio=start, aprobada=True, aprobada_por=user.id)
+    session.add(rule)
+    session.flush()
+    return regla_output(rule)
+
+
 def user_output(user: Usuario, colectivo_id: int | None = None):
     return {
         "id": user.id,
@@ -286,6 +364,8 @@ def list_users(session: DB, user: User):
     seen = set()
     output = []
     for item, colectivo_id in rows:
+        if usuario_eliminado(item):
+            continue
         if item.id not in seen:
             output.append(user_output(item, colectivo_id))
             seen.add(item.id)
@@ -324,8 +404,8 @@ def create_user(data: CreateUserInput, session: DB, user: User):
 @app.patch("/usuarios/{user_id}")
 def update_user(user_id: int, data: UpdateUserInput, session: DB, user: User):
     require_admin(user)
-    target = session.get(Usuario, user_id)
-    if not target:
+    target = session.get(Usuario, user_id, with_for_update=True)
+    if not target or usuario_eliminado(target):
         raise HTTPException(404, "Usuario no encontrado")
     if user_id == user.id and data.rol not in (None, "administrador"):
         raise HTTPException(403, "No puede cambiarse su propio rol administrativo")
@@ -363,6 +443,38 @@ def update_user(user_id: int, data: UpdateUserInput, session: DB, user: User):
     if colectivo_id is None and membership:
         colectivo_id = membership.colectivo_id
     return user_output(target, colectivo_id)
+
+
+@app.delete("/usuarios/{user_id}", status_code=204)
+def delete_user(user_id: int, session: DB, user: User):
+    """Elimina los datos de la cuenta y conserva los registros operativos."""
+    require_admin(user)
+    target = session.get(Usuario, user_id, with_for_update=True)
+    if not target:
+        raise HTTPException(404, "Usuario no encontrado")
+    if usuario_eliminado(target):
+        return
+    if target.id == user.id:
+        raise HTTPException(403, "No puede borrar su propia cuenta")
+    if target.rol == "administrador":
+        raise HTTPException(403, "Las cuentas de administrador no se borran desde el panel")
+    services.set_actor(session, user.id, "Eliminación de datos personales")
+    for field in ("correo", "telefono", "whatsapp_id", "direccion", "sector", "password_hash"):
+        setattr(target, field, None)
+    target.nombre = USUARIO_ELIMINADO
+    target.activo = False
+    session.execute(update(CoordinadorColectivo).where(CoordinadorColectivo.usuario_id == target.id)
+                    .values(activo=False))
+    conversation = select(Conversacion.id).where(Conversacion.usuario_id == target.id)
+    session.execute(update(MensajeWhatsapp).where(MensajeWhatsapp.conversacion_id.in_(conversation))
+                    .values(contenido=None))
+    session.execute(update(Conversacion).where(Conversacion.usuario_id == target.id)
+                    .values(estado_actual="inicio", datos_temporales={}))
+    notices = update(Notificacion).where(Notificacion.usuario_id == target.id)
+    session.execute(notices.values(mensaje="Contenido eliminado"))
+    session.execute(notices.where(Notificacion.estado == "pendiente")
+                    .values(estado="fallida", proximo_intento=None))
+    session.flush()
 
 
 @app.get("/materiales")

@@ -6,7 +6,7 @@ import { DailyResults } from "./daily-results";
 import { Dialog, Empty, Field, Form, Heading, Panel, value } from "./ui";
 import {
   apiToken, authService, puntosService, recoleccionService, recolectorService,
-  solicitudService, usuarioService, colectivoService,
+  solicitudService, usuarioService, colectivoService, reglaPuntosService,
   type ServerHistory, type ServerRequest, type ServerRequestDetail,
 } from "./services";
 
@@ -120,11 +120,59 @@ export function OperationPanel() {
         ? <p role="alert">Este perfil no tiene acceso al panel de operación.</p>
         : user.rol === "administrador"
           ? id ? <p role="alert">El perfil administrador supervisa resultados; las solicitudes son gestionadas por el colectivo.</p>
-            : <><AdminUsers /><DailyResults allowDemoFallback={false} /></>
+            : <><AdminPointsRules /><AdminUsers /><DailyResults allowDemoFallback={false} /></>
         : id ? <OperationDetail key={id} id={id} manage={user.rol === "coordinador"} />
         : <OperationList resident={user.rol === "residente"} />}
     </>}
   </div>;
+}
+
+function AdminPointsRules() {
+  const [groups, setGroups] = useState<Awaited<ReturnType<typeof colectivoService.list>>>([]);
+  const [rules, setRules] = useState<Awaited<ReturnType<typeof reglaPuntosService.list>>>([]);
+  const [error, setError] = useState("");
+  const [editing, setEditing] = useState(false);
+  const [refresh, setRefresh] = useState(0);
+  useEffect(() => {
+    let active = true;
+    Promise.all([colectivoService.list(), reglaPuntosService.list()]).then(([collectives, tariffs]) => {
+      if (active) { setGroups(collectives); setRules(tariffs); setError(""); }
+    }).catch((cause) => { if (active) setError(errorText(cause)); });
+    return () => { active = false; };
+  }, [refresh]);
+  async function publish(data: FormData) {
+    const start = value(data, "fecha_inicio");
+    await reglaPuntosService.publish({
+      colectivo_id: Number(value(data, "colectivo_id")),
+      puntos_por_kg: value(data, "puntos_por_kg"),
+      fecha_inicio: start ? new Date(start).toISOString() : undefined,
+    });
+    setEditing(false);
+    setRefresh((count) => count + 1);
+  }
+  const date = (iso: string) => new Date(iso).toLocaleString("es-CO");
+  return <>
+    <Heading title="Reglas de EcoPuntos" />
+    <Panel>
+      <button type="button" className="btn primary" disabled={!groups.length} onClick={() => setEditing(true)}>Publicar tarifa</button>
+      {error && <p role="alert" className="error">{error}</p>}
+      <div className="table-wrap"><table><thead><tr><th>Colectivo</th><th>EcoPuntos por kg</th><th>Desde</th><th>Hasta</th></tr></thead>
+        <tbody>{rules.map((rule) => <tr key={rule.id}>
+          <td>{groups.find((group) => group.id === rule.colectivo_id)?.nombre ?? rule.colectivo_id}</td>
+          <td>{Number(rule.puntos_por_kg).toLocaleString("es-CO")}</td><td>{date(rule.fecha_inicio)}</td>
+          <td>{rule.fecha_fin ? date(rule.fecha_fin) : "Sin fecha de fin"}</td>
+        </tr>)}</tbody>
+      </table></div>
+    </Panel>
+    {editing && <Dialog title="Publicar tarifa de EcoPuntos" onClose={() => setEditing(false)}>
+      <Form label="Publicar tarifa" onSave={publish}>
+        <Field label="Colectivo"><select name="colectivo_id" required>{groups.map((group) => <option key={group.id} value={group.id}>{group.nombre}</option>)}</select></Field>
+        <Field label="EcoPuntos por kilo"><input name="puntos_por_kg" type="number" min="0" max="100" step="0.01" required /></Field>
+        <Field label="Vigencia desde (hora local)"><input name="fecha_inicio" type="datetime-local" /></Field>
+        <p>Deja la fecha vacía para aplicar la tarifa desde ahora.</p>
+      </Form>
+    </Dialog>}
+  </>;
 }
 
 function AdminUsers() {
@@ -133,18 +181,29 @@ function AdminUsers() {
   const [error, setError] = useState("");
   const [createOpen, setCreateOpen] = useState(false);
   const [refresh, setRefresh] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState<number>();
   useEffect(() => {
     let active = true;
+    let timer: number;
     setError("");
-    Promise.all([usuarioService.list(), colectivoService.list()])
-      .then(([people, groups]) => {
+    async function load() {
+      try {
+        const [people, groups] = await Promise.all([usuarioService.list(), colectivoService.list()]);
+        if (!active) return;
+        setUsers(people as Array<Record<string, unknown>>);
+        setCollectives(groups);
+      } catch (cause) {
+        if (active) setError(errorText(cause));
+      } finally {
         if (active) {
-          setUsers(people as Array<Record<string, unknown>>);
-          setCollectives(groups.map((item) => ({ id: item.id, nombre: item.nombre })));
+          setLoading(false);
+          timer = window.setTimeout(load, 10_000);
         }
-      })
-      .catch((cause) => { if (active) setError(errorText(cause)); });
-    return () => { active = false; };
+      }
+    }
+    void load();
+    return () => { active = false; window.clearTimeout(timer); };
   }, [refresh]);
   async function create(data: FormData) {
     const password = String(data.get("password") ?? "");
@@ -164,32 +223,40 @@ function AdminUsers() {
     setCreateOpen(false);
     setRefresh((count) => count + 1);
   }
-  async function togglePilot(id: number, enabled: boolean) {
+  async function toggleActive(id: number, enabled: boolean) {
+    setBusy(id);
     try {
-      await usuarioService.update(id, { piloto_habilitado: enabled });
+      await usuarioService.update(id, { activo: enabled });
       setRefresh((count) => count + 1);
     } catch (cause) { setError(errorText(cause)); }
+    finally { setBusy(undefined); }
   }
-  async function toggleActive(id: number, enabled: boolean) {
-    await usuarioService.update(id, { activo: enabled });
-    setRefresh((count) => count + 1);
+  async function removeUser(id: number, name: string) {
+    if (!window.confirm(`¿Borrar a ${name}? Se borran los datos de su cuenta y el contenido de sus mensajes. Su correo o WhatsApp `
+      + "queda libre para un registro nuevo. Se conservan las solicitudes y sus puntos en el historial. No se puede deshacer.")) return;
+    setBusy(id);
+    try {
+      await usuarioService.remove(id);
+      setRefresh((count) => count + 1);
+    } catch (cause) { setError(errorText(cause)); }
+    finally { setBusy(undefined); }
   }
   return <>
     <Heading title="Usuarios registrados" text="Administración de residentes, coordinadores y cuentas administrativas." />
     <div className="actions mb-5"><button type="button" className="btn primary" onClick={() => setCreateOpen(true)}>Crear usuario</button></div>
     {error && <p role="alert" className="error">{error}</p>}
     <Panel>
-      {!users.length && !error ? <p role="status">Cargando usuarios…</p> :
+      {loading ? <p role="status">Cargando usuarios…</p> : !users.length ? <p>No hay usuarios para mostrar.</p> :
         <div className="table-wrap"><table><thead><tr><th>Nombre</th><th>Correo</th><th>WhatsApp</th><th>Rol</th><th>Estado</th><th>Piloto</th><th>Acciones</th></tr></thead>
           <tbody>{users.map((person) => <tr key={String(person.id)}>
             <td>{String(person.nombre)}</td><td>{String(person.correo ?? "—")}</td><td>{String(person.whatsapp_id ?? "—")}</td><td>{String(person.rol)}</td>
             <td>{person.activo ? "Activo" : "Inactivo"}</td>
             <td>{person.piloto_habilitado ? "Habilitado" : "Pendiente"}</td>
             <td><div className="actions">
-              {person.rol === "residente" && <button type="button" className="text-link" onClick={() => togglePilot(Number(person.id), !Boolean(person.piloto_habilitado))}>
-                {person.piloto_habilitado ? "Retirar piloto" : "Habilitar piloto"}</button>}
-              <button type="button" className="text-link" onClick={() => toggleActive(Number(person.id), !Boolean(person.activo))}>
+              <button type="button" className="text-link" disabled={busy !== undefined} onClick={() => toggleActive(Number(person.id), !Boolean(person.activo))}>
                 {person.activo ? "Desactivar" : "Activar"}</button>
+              {person.rol !== "administrador" && <button type="button" className="text-link" disabled={busy !== undefined} onClick={() => removeUser(Number(person.id), String(person.nombre))}>
+                Borrar</button>}
             </div></td>
           </tr>)}</tbody></table></div>}
     </Panel>

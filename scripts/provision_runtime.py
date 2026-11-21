@@ -54,6 +54,10 @@ def main():
         conn.execute(sql.SQL("GRANT UPDATE (nombre, tipo_generador, direccion) ON usuarios TO {}").format(identifier))
         if args.panel:
             conn.execute(sql.SQL("GRANT UPDATE (piloto_habilitado) ON usuarios TO {}").format(identifier))
+            # Administración de cuentas: editar, activar, cambiar contraseña y eliminar datos personales.
+            conn.execute(sql.SQL("GRANT UPDATE (correo, telefono, whatsapp_id, password_hash, rol, activo, sector) ON usuarios TO {}").format(identifier))
+            conn.execute(sql.SQL("GRANT INSERT (usuario_id, colectivo_id), UPDATE (colectivo_id, activo) ON coordinadores_colectivo TO {}").format(identifier))
+            conn.execute(sql.SQL("GRANT INSERT (colectivo_id, puntos_por_kg, fecha_inicio, fecha_fin, aprobada, aprobada_por), UPDATE (fecha_fin) ON reglas_puntos TO {}").format(identifier))
         # SELECT FOR SHARE requiere también algún permiso UPDATE en tablas consultadas.
         conn.execute(sql.SQL("GRANT UPDATE(id) ON usuarios, colectivos, coordinadores_colectivo, recolectores, materiales, reglas_puntos TO {}").format(identifier))
     print("Rol runtime provisionado sin privilegios de propietario; secretos conservados solo en .env")

@@ -58,14 +58,14 @@ def test_confirmacion_real_y_enrutamiento(database, charla, materiales, categori
         assert session.scalar(select(func.count()).select_from(MovimientoPuntos)) == 0
 
 
-@pytest.mark.parametrize("caso", ["cancelar", "material inactivo", "piloto revocado", "colectivo inactivo"])
+@pytest.mark.parametrize("caso", ["cancelar", "material inactivo", "cuenta inactiva", "colectivo inactivo"])
 def test_confirmacion_no_persiste_si_falla(database, charla, caso):
     completar_borrador(charla, "Tengo botellas plásticas y restos vegetales")
     with Session(database) as session, session.begin():
         if caso == "material inactivo":
             session.scalar(select(Material).where(Material.nombre == "DEMO Botellas PET")).activo = False
-        if caso == "piloto revocado":
-            session.scalar(select(Usuario).where(Usuario.whatsapp_id == "DEMO-WA-REC")).piloto_habilitado = False
+        if caso == "cuenta inactiva":
+            session.scalar(select(Usuario).where(Usuario.whatsapp_id == "DEMO-WA-REC")).activo = False
         if caso == "colectivo inactivo":
             session.scalar(select(Colectivo).where(Colectivo.tipo_flujo == "reciclable")).activo = False
     assert "Código:" not in charla("3" if caso == "cancelar" else "1")[1]

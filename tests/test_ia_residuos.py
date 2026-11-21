@@ -8,6 +8,7 @@ from pathlib import Path
 import secrets
 import sys
 import time
+from datetime import datetime, timedelta, timezone
 
 import httpx
 import pytest
@@ -17,7 +18,7 @@ from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 
 from backend import ia_residuos as ia, whatsapp
-from backend.conversacion import procesar_evento
+from backend.conversacion import procesar_evento, resumen_foto
 from backend.main import app
 from backend.models import Colectivo, Conversacion, Notificacion, Solicitud, Usuario
 from scripts import provision_runtime
@@ -159,10 +160,19 @@ def test_runtime_solo_puede_actualizar_columnas_permitidas(runtime_ia):
     assert error.value.orig.sqlstate == "42501"
 
 
+def test_resumen_foto_detalla_detecciones_y_consejos_sin_repetir():
+    item = {"nombre": "Cáscara de fruta", "material": "DEMO Restos vegetales", "categoria": "organico",
+            "recomendacion": "Separa el residuo de su empaque."}
+    result = resumen_foto({"estado": "completado", "residuos": [item, item, {"categoria": None}]})
+    assert "Orgánico: Cáscara de fruta (Restos vegetales) ×2" in result
+    assert result.count(item["recomendacion"]) == 1
+    assert "no pude clasificar" in result and "DEMO" not in result
+
+
 @pytest.mark.parametrize(("categorias", "status", "esperado"), [
-    (("organico",), 200, "tipo orgánico"),
-    (("aprovechable",), 200, "tipo aprovechable"),
-    (("organico", "aprovechable"), 200, "tipo orgánico|tipo aprovechable"),
+    (("organico",), 200, "Orgánico: Restos vegetales"),
+    (("aprovechable",), 200, "Aprovechable: Botella plástica"),
+    (("organico", "aprovechable"), 200, "Orgánico: Restos vegetales|Aprovechable: Botella plástica"),
     ((), 200, "Envía otra foto"),
     ((), 503, "No pude analizar la foto"),
     (None, 200, "No pude analizar la foto"),
@@ -226,17 +236,14 @@ def test_webhook_con_runtime_texto_foto_y_fallback(database, client, headers, ru
         r = client.post("/webhooks/whatsapp", content=cuerpo, headers={"X-Hub-Signature-256": "sha256=" + firma})
         assert r.status_code == 200, r.text
 
-    for t in ("Hola", "Persona de Prueba", "Negocio", "Dirección de prueba 1", "1", "Solicitar recolección"):
+    for t in ("Hola", "Persona de Prueba", "Negocio", "Dirección de prueba 1", "1"):
         enviar(t)
     with Session(database) as session, session.begin():
         usuario = session.scalar(select(Usuario).where(Usuario.whatsapp_id == codigo_demo))
         assert (usuario.nombre, usuario.tipo_generador, usuario.direccion, usuario.rol, usuario.piloto_habilitado) == (
-            "Persona de Prueba", "negocio", "Dirección de prueba 1", "residente", False)
+            "Persona de Prueba", "negocio", "Dirección de prueba 1", "residente", True)
         uid = usuario.id
         assert not session.scalar(select(Solicitud).where(Solicitud.usuario_id == uid))
-        assert any("debe habilitarte" in n.mensaje for n in session.scalars(
-            select(Notificacion).where(Notificacion.usuario_id == uid)))
-        usuario.piloto_habilitado = True
     for t in ("Actualizar mis datos", "Dirección de prueba 2", "1",
               "Tengo restos vegetales", "1", "1", "Mañana", "omitir", "1"):
         enviar(t)
@@ -286,6 +293,57 @@ def test_webhook_con_runtime_texto_foto_y_fallback(database, client, headers, ru
 
 
 @pytest.mark.parametrize("runtime_ia", ["panel"], indirect=True)
+def test_admin_borra_cuenta_y_puede_reutilizar_correo(database, client, headers, runtime_ia):
+    admin = headers["admin@example.invalid"]
+    email = "residente.reciclaje@example.invalid"
+    with database.connect() as conn:
+        uid = conn.scalar(text("SELECT id FROM usuarios WHERE correo=:email"), {"email": email})
+        collective = conn.scalar(text("SELECT id FROM colectivos WHERE tipo_flujo='reciclable'"))
+    path = f"/usuarios/{uid}"
+    assert client.delete(path, headers=headers[email]).status_code == 403
+    assert client.delete(path, headers=admin).status_code == 204
+    assert client.delete(path, headers=admin).status_code == 204
+    assert client.patch(path, json={"activo": True}, headers=admin).status_code == 404
+    assert client.get("/auth/me", headers=headers[email]).status_code == 401
+    with Session(database) as session:
+        old = session.get(Usuario, uid)
+        assert not old.activo and old.correo is None and old.whatsapp_id is None
+        assert old.direccion is None and old.password_hash is None
+        assert session.scalar(select(Solicitud.id).where(Solicitud.usuario_id == uid))
+    assert all(user["id"] != uid for user in client.get("/usuarios", headers=admin).json())
+    payload = {"nombre": "Cuenta de reemplazo", "correo": email, "password": "NuevaPrueba2026!",
+               "confirm_password": "NuevaPrueba2026!", "tipo_generador": "hogar", "rol": "residente"}
+    created = client.post("/usuarios", json=payload, headers=admin)
+    assert created.status_code == 201 and created.json()["id"] != uid
+    assert client.post("/auth/token", json={"correo": email, "password": payload["password"]}).status_code == 200
+    coordinator = client.post("/usuarios", headers=admin, json={**payload, "rol": "coordinador",
+        "correo": "coordinador.nuevo@example.invalid", "colectivo_id": collective})
+    assert coordinator.status_code == 201, coordinator.text
+
+
+@pytest.mark.parametrize("runtime_ia", ["panel"], indirect=True)
+def test_administrador_publica_tarifas_con_vigencias_sin_superponer(database, client, headers, runtime_ia):
+    admin = headers["admin@example.invalid"]
+    coordinator = headers["coordinador.huerta@example.invalid"]
+    with database.connect() as conn:
+        group = conn.scalar(text("SELECT id FROM colectivos WHERE tipo_flujo='organico'"))
+    initial = {"colectivo_id": group, "puntos_por_kg": "0.50"}
+    assert client.post("/reglas-puntos", headers=coordinator, json=initial).status_code == 403
+    assert client.get("/reglas-puntos", headers=coordinator).status_code == 403
+    current = client.post("/reglas-puntos", headers=admin, json=initial)
+    assert current.status_code == 201, current.text
+    tomorrow = (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()
+    future = client.post("/reglas-puntos", headers=admin, json={
+        **initial, "puntos_por_kg": "0.75", "fecha_inicio": tomorrow,
+    })
+    assert future.status_code == 201, future.text
+    assert client.post("/reglas-puntos", headers=admin, json=initial).status_code == 409
+    first, second = client.get("/reglas-puntos", headers=admin).json()
+    assert first["puntos_por_kg"] == "0.50" and second["puntos_por_kg"] == "0.75"
+    assert first["fecha_fin"] == second["fecha_inicio"] and second["fecha_fin"] is None
+
+
+@pytest.mark.parametrize("runtime_ia", ["panel"], indirect=True)
 def test_openwa_foto_confirmacion_y_panel(database, client, headers, runtime_ia, motor, monkeypatch):
     from backend import whatsapp_openwa
 
@@ -330,12 +388,15 @@ def test_openwa_foto_confirmacion_y_panel(database, client, headers, runtime_ia,
         assert mensaje(t) == 1
     admin = headers["admin@example.invalid"]
     usuarios = client.get("/usuarios", headers=admin).json()
-    uid = next(u["id"] for u in usuarios if u["whatsapp_id"] == numero)
-    assert client.patch(f"/usuarios/{uid}", json={"piloto_habilitado": True}, headers=admin).status_code == 200
+    residente = next(u for u in usuarios if u["whatsapp_id"] == numero)
+    assert residente["piloto_habilitado"] is True
+    uid = residente["id"]
     for t in ("1", "reciclable", "foto"):
         mensaje(t)
     mensaje(image=True)
-    assert "Revisa estos materiales" in respuestas[-1]
+    assert "Aprovechable: Botella plástica" in respuestas[-1]
+    assert "Confirma los materiales para la recolección" in respuestas[-1]
+    assert "Botellas PET — Reciclable" in respuestas[-1] and "DEMO " not in respuestas[-1]
     mensaje("corregir")
     mensaje("Tengo botellas plásticas")
     assert "Revisa estos materiales" in respuestas[-1]

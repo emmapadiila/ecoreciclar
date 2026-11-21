@@ -82,6 +82,13 @@ export const usuarioService = {
   me: authService.me,
   create: (body: unknown) => request("/usuarios", "POST", body),
   update: (id: number, body: unknown) => request("/usuarios/" + id, "PATCH", body),
+  remove: (id: number) => request<void>("/usuarios/" + id, "DELETE"),
+};
+export const reglaPuntosService = {
+  list: () => request<Array<{ id: number; colectivo_id: number; puntos_por_kg: string;
+    fecha_inicio: string; fecha_fin: string | null }>>("/reglas-puntos"),
+  publish: (body: { colectivo_id: number; puntos_por_kg: string; fecha_inicio?: string }) =>
+    request("/reglas-puntos", "POST", body),
 };
 export const materialService = {
   list: () => request<Array<{ id: number; nombre: string; categoria: string }>>(

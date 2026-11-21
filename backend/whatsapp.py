@@ -182,8 +182,12 @@ def _procesar_registrado(bind, mid, uid, evento, chatbot, analizar):
                 if datos is not None:
                     evento.analisis_imagen = analizar(datos, meta.mime_imagen(datos))
             with Session(conexion) as sesion, sesion.begin():
+                usuario = sesion.get(Usuario, uid, with_for_update=True)
                 mensaje = sesion.get(MensajeWhatsapp, mid, with_for_update=True)
-                return procesar_mensaje(sesion, mensaje, sesion.get(Usuario, uid), evento, chatbot)
+                if usuario.whatsapp_id != evento.wa_id:
+                    mensaje.estado_procesamiento = "procesado"
+                    return []
+                return procesar_mensaje(sesion, mensaje, usuario, evento, chatbot)
         finally:
             try:
                 with conexion.begin():

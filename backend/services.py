@@ -262,7 +262,9 @@ def register_verified_message(session: Session, whatsapp_id: str, message_id: st
         raise ValueError("Identificadores obligatorios")
     session.execute(insert(Usuario).values(whatsapp_id=whatsapp_id, nombre="Pendiente de registro")
                     .on_conflict_do_nothing(index_elements=[Usuario.whatsapp_id]))
-    user = session.scalar(select(Usuario).where(Usuario.whatsapp_id == whatsapp_id))
+    user = session.scalar(select(Usuario).where(Usuario.whatsapp_id == whatsapp_id).with_for_update())
+    if user is None:
+        raise ValueError("El remitente ya no está vinculado")
     session.execute(insert(Conversacion).values(usuario_id=user.id)
                     .on_conflict_do_nothing(index_elements=[Conversacion.usuario_id]))
     conversation = session.scalar(select(Conversacion).where(Conversacion.usuario_id == user.id))

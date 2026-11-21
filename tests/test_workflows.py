@@ -57,6 +57,22 @@ def prepare_seeded_close(database, sid):
         prepare_pickup(session, user, sid)
 
 
+def test_publicar_tarifa_conserva_acreditacion_anterior(database, client, headers):
+    approve(database)
+    collective, _, _, request_id = ids(database)
+    prepare_seeded_close(database, request_id)
+    coordinator = headers["coordinador.reciclaje@example.invalid"]
+    resident = headers["residente.reciclaje@example.invalid"]
+    admin = headers["admin@example.invalid"]
+    closed = client.post(f"/solicitudes/{request_id}/cierre", headers=coordinator, json={})
+    assert closed.status_code == 200 and closed.json()["puntos"] == "50.00"
+    rule = client.post("/reglas-puntos", headers=admin, json={
+        "colectivo_id": collective, "puntos_por_kg": "0.50",
+    })
+    assert rule.status_code == 201, rule.text
+    assert client.get("/mi-cuenta/puntos", headers=resident).json()["puntos"] == "50.00"
+
+
 def test_public_daily_results_empty_and_invalid_date(client):
     response = client.get("/public/resultados-diarios?fecha=1900-01-01")
     assert response.status_code == 200
@@ -230,9 +246,12 @@ def test_authentication_and_disabled_pilot(database, client, headers):
     with Session(database) as session, session.begin():
         user = session.scalar(select(Usuario).where(Usuario.correo == "residente.reciclaje@example.invalid"))
         user.piloto_habilitado = False
+    with Session(database) as session:
+        # Un residente registrado no puede quedar fuera del piloto.
+        user = session.scalar(select(Usuario).where(Usuario.correo == "residente.reciclaje@example.invalid"))
+        assert user.piloto_habilitado
     auth = headers["residente.reciclaje@example.invalid"]
     assert client.get("/solicitudes", headers=auth).status_code == 200
-    assert client.post("/solicitudes", headers=auth, json={"direccion": "DEMO", "materiales": [{"material_id": 1, "confirmado": True}]}).status_code == 403
 
 
 def test_message_identity_and_retries(database):
@@ -410,6 +429,8 @@ def test_request_without_pilot_authorization_rejected_in_database(database):
     with pytest.raises(IntegrityError):
         with Session(database) as session, session.begin():
             user = session.scalar(select(Usuario).where(Usuario.correo == "residente.reciclaje@example.invalid"))
+            # Solo un registro incompleto queda fuera del piloto.
+            user.nombre = "Pendiente de registro"
             user.piloto_habilitado = False
             session.flush()
             set_actor(session, user.id)

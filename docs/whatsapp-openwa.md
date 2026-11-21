@@ -9,11 +9,11 @@ Abre una terminal en la carpeta de este proyecto que contiene `compose.yaml` y e
 3. En **Sessions**, abre `ecoconecta`. Inicia la sesión si está detenida y muestra el QR. En el teléfono del bot abre **WhatsApp → Dispositivos vinculados → Vincular un dispositivo** y escanéalo. Espera a que OpenWA muestre **ready**. Si caduca el QR, muestra uno nuevo.
 4. En los webhooks de esa sesión, abre el que apunta a `http://api:8000/webhooks/openwa` y pulsa la acción de prueba. Debes obtener HTTP 200. Este evento verifica la conexión entre contenedores. El siguiente paso comprueba la entrega en WhatsApp.
 
-## Registrar y habilitar al residente
+## Registrar al residente
 
 1. Desde la segunda cuenta, abre un **chat privado** con el número del bot. Envía `Hola`. Comprueba que la bienvenida y la pregunta por tu nombre aparecen en ese mismo hilo.
 2. Envía tu nombre completo. Espera la siguiente pregunta y envía `Hogar`. Envía una dirección de recogida de prueba. Cuando aparezca el resumen, responde `1` para guardar el registro.
-3. Abre el [acceso registrado de EcoConecta](http://localhost:5173/acceso-registrado) e inicia sesión como administrador. En **Usuarios registrados**, localiza el nombre y el número de WhatsApp del paso anterior. Pulsa **Habilitar piloto** y comprueba que cambia a **Habilitado**.
+3. El registro confirmado se guarda en PostgreSQL y habilita al residente automáticamente. Desde el chat ya puede solicitar una recolección y consultar sus propios datos.
 4. Si acabas de instalar el catálogo de demostración y necesitas establecer las contraseñas iniciales, ejecuta `python -m scripts.set_password` en la raíz con el entorno Python activado. El script pregunta por el correo y lee la contraseña de forma privada. Las cuentas del seed para este recorrido son `admin@example.invalid` y `coordinador.reciclaje@example.invalid`. Ejecútalo una vez por cuenta. En una instalación existente usa las credenciales de sus responsables.
 
 ## Crear una solicitud y comprobar el reenvío

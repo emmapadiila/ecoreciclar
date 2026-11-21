@@ -115,7 +115,7 @@ def test_public_registration_persists_resident(database, client):
         assert user.password_hash.startswith("scrypt$")
         assert user.rol == "residente"
         assert user.activo
-        assert not user.piloto_habilitado
+        assert user.piloto_habilitado
 
 
 def test_public_registration_duplicate_and_role_tampering(database, client):
