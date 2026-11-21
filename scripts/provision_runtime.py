@@ -46,6 +46,7 @@ def main():
         conn.execute(sql.SQL("GRANT INSERT ON usuarios, conversaciones, mensajes_whatsapp, solicitudes, solicitud_materiales, asignaciones, recolecciones, movimientos_puntos, historial_estados, notificaciones, clasificaciones_ia TO {}").format(identifier))
         conn.execute(sql.SQL("GRANT UPDATE ON solicitudes, solicitud_materiales, asignaciones, conversaciones, mensajes_whatsapp, notificaciones TO {}").format(identifier))
         conn.execute(sql.SQL("GRANT INSERT ON eventos_solicitud TO {}").format(identifier))
+        conn.execute(sql.SQL("GRANT UPDATE (nombre, tipo_generador, direccion) ON usuarios TO {}").format(identifier))
         # SELECT FOR SHARE requiere también algún permiso UPDATE en tablas consultadas.
         conn.execute(sql.SQL("GRANT UPDATE(id) ON usuarios, colectivos, coordinadores_colectivo, recolectores, materiales, reglas_puntos TO {}").format(identifier))
     print("Rol runtime provisionado sin privilegios de propietario; secretos conservados solo en .env")
