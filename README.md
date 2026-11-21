@@ -1,6 +1,6 @@
 # EcoConecta 360 — PostgreSQL e integración FastAPI
 
-Infraestructura de Ángel para el piloto Villas de San Pablo, Barranquilla. PostgreSQL 17, SQLAlchemy 2, Alembic y una API de referencia para coordinar con Breiner. **No incluye frontend React, webhook Meta ni proveedor de IA**: no existían en el repositorio recibido. No se modificó código de Emma, Breiner ni Manuel. No se ha consultado el PDF oficial de la Hackathon; las reglas provienen de los documentos compartidos en la conversación.
+EcoConecta conecta el chatbot de WhatsApp, el panel operativo y PostgreSQL. Para vincular un teléfono y probar mensajes, fotografías y confirmaciones, sigue la [guía de OpenWA paso a paso](docs/whatsapp-openwa.md).
 
 ## Documentación
 

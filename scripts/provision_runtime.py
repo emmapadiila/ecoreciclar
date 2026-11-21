@@ -16,24 +16,29 @@ from backend.db import database_url
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--test", action="store_true", help="Provisionar permisos en TEST_DATABASE_URL")
+    parser.add_argument("--panel", action="store_true", help="Provisionar el login separado para la API del panel")
     args = parser.parse_args()
     load_dotenv()
     url = os.environ["TEST_DATABASE_URL"] if args.test else database_url()
     url = make_url(url) if isinstance(url, str) else url
     if args.test and not url.database.endswith("_test"):
         raise SystemExit("La base de pruebas debe terminar en _test")
-    role = os.getenv("DB_APP_USER", "ecoconecta_app")
+    prefijo = "DB_PANEL" if args.panel else "DB_APP"
+    role = os.getenv(prefijo + "_USER") or ("ecoconecta_panel" if args.panel else "ecoconecta_app")
+    otro = os.getenv("DB_APP_USER", "ecoconecta_app") if args.panel else os.getenv("DB_PANEL_USER", "ecoconecta_panel")
+    if role == otro:
+        raise SystemExit("El panel y el webhook requieren logins distintos")
     if role == url.username or role in ("postgres", "public"):
         raise SystemExit("El rol runtime debe ser distinto del propietario y de roles reservados")
-    password = os.getenv("DB_APP_PASSWORD")
+    password = os.getenv(prefijo + "_PASSWORD")
     with connect(host=url.host, port=url.port, user=url.username, password=url.password, dbname=url.database) as conn:
         exists = conn.execute("SELECT 1 FROM pg_roles WHERE rolname=%s", (role,)).fetchone()
         if exists and not password:
             raise SystemExit("Rol existente: configure DB_APP_PASSWORD; no se rota automáticamente")
         if not password:
             password = secrets.token_hex(32)
-            set_key(".env", "DB_APP_USER", role)
-            set_key(".env", "DB_APP_PASSWORD", password)
+            set_key(".env", prefijo + "_USER", role)
+            set_key(".env", prefijo + "_PASSWORD", password)
             Path(".env").chmod(0o600)
         identifier = sql.Identifier(role)
         if not exists:
@@ -47,6 +52,8 @@ def main():
         conn.execute(sql.SQL("GRANT UPDATE ON solicitudes, solicitud_materiales, asignaciones, conversaciones, mensajes_whatsapp, notificaciones TO {}").format(identifier))
         conn.execute(sql.SQL("GRANT INSERT ON eventos_solicitud TO {}").format(identifier))
         conn.execute(sql.SQL("GRANT UPDATE (nombre, tipo_generador, direccion) ON usuarios TO {}").format(identifier))
+        if args.panel:
+            conn.execute(sql.SQL("GRANT UPDATE (piloto_habilitado) ON usuarios TO {}").format(identifier))
         # SELECT FOR SHARE requiere también algún permiso UPDATE en tablas consultadas.
         conn.execute(sql.SQL("GRANT UPDATE(id) ON usuarios, colectivos, coordinadores_colectivo, recolectores, materiales, reglas_puntos TO {}").format(identifier))
     print("Rol runtime provisionado sin privilegios de propietario; secretos conservados solo en .env")

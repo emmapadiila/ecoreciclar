@@ -43,7 +43,9 @@ def database():
 
 
 @pytest.fixture(autouse=True)
-def clean_database(database):
+def clean_database(database, monkeypatch):
+    monkeypatch.setenv("WHATSAPP_PROVIDER", "meta")
+    monkeypatch.setenv("DB_PANEL_PASSWORD", "")
     tables = ", ".join('"' + table.name + '"' for table in Base.metadata.sorted_tables)
     with database.begin() as connection:
         connection.exec_driver_sql(f"TRUNCATE {tables} RESTART IDENTITY CASCADE")

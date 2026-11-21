@@ -14,6 +14,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from backend import services
+from backend.conversacion import procesar_evento
+from backend.ia_residuos import analizar_imagen
 from backend.whatsapp import router as whatsapp_router
 from backend.auth import auth_secret, current_user, hash_password, issue_token, verify_password
 from backend.db import database_url, get_session
@@ -39,6 +41,8 @@ async def lifespan(app):
 
 
 app = FastAPI(title="EcoConecta 360 — API de referencia", lifespan=lifespan)
+app.state.procesar_evento = procesar_evento
+app.state.analizar_imagen = analizar_imagen
 app.include_router(whatsapp_router)
 cors_origins = [origin.strip() for origin in os.getenv("CORS_ORIGINS", "").split(",") if origin.strip()]
 if cors_origins:
@@ -240,6 +244,7 @@ def authenticated_user(user: User, session: DB):
         "nombre": user.nombre,
         "correo": user.correo,
         "telefono": user.telefono,
+        "whatsapp_id": user.whatsapp_id,
         "direccion": user.direccion,
         "rol": user.rol,
         "tipo_generador": user.tipo_generador,
@@ -260,6 +265,7 @@ def user_output(user: Usuario, colectivo_id: int | None = None):
         "nombre": user.nombre,
         "correo": user.correo,
         "telefono": user.telefono,
+        "whatsapp_id": user.whatsapp_id,
         "direccion": user.direccion,
         "rol": user.rol,
         "tipo_generador": user.tipo_generador,

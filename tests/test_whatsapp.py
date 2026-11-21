@@ -29,11 +29,8 @@ from sqlalchemy.orm import Session
 from backend.main import app
 from backend.models import Conversacion, MensajeWhatsapp, Usuario
 from backend.whatsapp import (
-    MENSAJE_MENU,
-    RESPUESTA_FOTO,
     MensajeEntrante,
     extraer_mensajes,
-    responder,
     router as whatsapp_router,
     verificar_firma,
 )
@@ -221,7 +218,7 @@ def test_post_firma_valida_registra_y_procesa(database, client):
             )
         )
         assert saliente is not None
-        assert saliente.contenido.startswith("Hola, soy el asistente")
+        assert saliente.contenido.startswith("¡Hola de nuevo")
         # Sin credenciales de Meta en pruebas: el envío falla de forma honesta.
         assert saliente.estado_envio == "fallido"
         assert saliente.meta_message_id.startswith("saliente-sin-entrega-")
@@ -242,7 +239,7 @@ def test_reintento_no_reprocesa_t04(database, client):
             .where(MensajeWhatsapp.direccion == "saliente")
         )
     assert entrantes == 1
-    assert salientes == 1
+    assert salientes == 2
 
 
 def test_recibo_de_estado_no_procesa(client):
@@ -342,16 +339,6 @@ def test_parser_tipos():
     assert eventos[2].titulo_boton == "Agendar"
 
 
-def test_t03_saludo_devuelve_menu():
-    mensaje = MensajeWhatsapp(tipo="texto", contenido="Hola")
-    assert MENSAJE_MENU in responder(mensaje, Conversacion(), Usuario())
-
-
-def test_respuesta_foto_honesta():
-    mensaje = MensajeWhatsapp(tipo="imagen")
-    assert responder(mensaje, Conversacion(), Usuario()) == RESPUESTA_FOTO
-
-
 def test_contrato_imagen_y_recibo_firmado(client, database, monkeypatch):
     from backend import whatsapp, whatsapp_meta
     from datetime import datetime, timezone
@@ -397,7 +384,8 @@ def test_reintento_tras_rollback_del_chatbot(client, database, monkeypatch):
             MensajeWhatsapp.meta_message_id == "wamid.rollback")) == "pendiente"
         assert session.scalar(select(Notificacion.id).where(Notificacion.tipo == "respuesta")) is None
         assert session.scalar(select(Conversacion.id).where(Conversacion.estado_actual == "no_confirmado")) is None
-    monkeypatch.delattr(app.state, "procesar_evento")
+    from backend.conversacion import procesar_evento
+    monkeypatch.setattr(app.state, "procesar_evento", procesar_evento)
     assert _post(client, payload).json() == {"success": True, "nuevos": 0}
     with Session(database) as session:
         assert session.scalar(select(MensajeWhatsapp.estado_procesamiento).where(

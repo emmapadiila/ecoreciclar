@@ -15,7 +15,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
-from backend import services
+from backend import services, whatsapp_openwa
 from backend.db import engine
 from backend import notificaciones_whatsapp as outbox, whatsapp_meta as meta
 from backend.whatsapp_meta import descargar_imagen
@@ -24,23 +24,6 @@ from backend.models import Conversacion, MensajeWhatsapp, Notificacion, Usuario
 logger = logging.getLogger("ecoreciclar.whatsapp")
 
 router = APIRouter(prefix="/webhooks", tags=["whatsapp"])
-
-MENSAJE_MENU = (
-    "Hola, soy el asistente de EcoConecta 360 en Villas de San Pablo.\n"
-    "Escribe el número de la opción que necesitas:\n"
-    "1. Agendar una recolección a domicilio\n"
-    "2. Consultar mis solicitudes\n"
-    "3. Consultar mis EcoPuntos\n"
-    "4. Consejos para separar residuos"
-)
-
-RESPUESTA_FOTO = (
-    "Recibí tu foto. La clasificación con IA todavía no está activa en el piloto; "
-    "pronto te propondré categoría y colectivo. Mientras tanto puedes escribir 1 "
-    "para agendar una recolección."
-)
-
-SALUDOS = {"hola", "buenas", "menu", "menú", "inicio"}
 
 # Tipo de Meta -> tipo interno según el comentario de MensajeWhatsapp.tipo.
 TIPOS = {
@@ -63,21 +46,22 @@ class MensajeEntrante:
     mime_type: str | None = None
     titulo_boton: str | None = None
     fecha_meta: datetime | None = None
+    imagen: bytes | None = field(default=None, repr=False)
     analisis_imagen: object = field(default=None, repr=False)
 
 
 # ----------------------------- seguridad ------------------------------------
 
 
-def verificar_firma(cuerpo: bytes, firma_recibida: str | None) -> bool:
+def verificar_firma(cuerpo: bytes, firma_recibida: str | None, variable="META_APP_SECRET") -> bool:
     """Compara X-Hub-Signature-256 con el HMAC-SHA256 del cuerpo crudo.
 
     Sin META_APP_SECRET configurado se rechaza todo (fail closed).
     """
-    secreto = os.getenv("META_APP_SECRET", "")
+    secreto = os.getenv(variable, "")
     if not secreto:
         logger.warning(
-            "META_APP_SECRET sin configurar: evento rechazado (fail closed)."
+            "%s sin configurar: evento rechazado.", variable
         )
         return False
     esperada = (
@@ -148,54 +132,8 @@ def enviar_texto(wa_id: str, texto: str) -> str | None:
         return None
 
 
-# --------------------- respuestas de la Fase 2 -------------------------------
-# La Fase 3 (conversacion.py) leerá conversacion.estado_actual y
-# conversacion.datos_temporales para el estado máquina real; este bloque es el
-# punto único donde se decide la respuesta.
-
-
-def responder_texto(texto: str | None) -> str:
-    """T03: el saludo devuelve el menú; de momento cualquier otro texto también."""
-    normalizado = (texto or "").strip().lower()
-    if normalizado in SALUDOS or normalizado.startswith("hola"):
-        return MENSAJE_MENU
-    return "No reconocí esa opción.\n\n" + MENSAJE_MENU
-
-
-def responder(
-    mensaje: MensajeWhatsapp, conversacion: Conversacion, usuario: Usuario
-) -> str:
-    """Decide la respuesta según el tipo de mensaje entrante (Fase 2).
-
-    Fase 3: añadir la verificación usuario.piloto_habilitado antes de agendar
-    (los remitentes nuevos se registran sin habilitar el piloto) y el ciclo
-    completo del estado máquina.
-    """
-    if mensaje.tipo == "imagen":
-        return RESPUESTA_FOTO
-    if mensaje.tipo == "respuesta":
-        return (
-            f"Anoté tu opción: {mensaje.contenido or 'sin título'}. "
-            "Este flujo se conectará durante el piloto.\n\n" + MENSAJE_MENU
-        )
-    return responder_texto(mensaje.contenido)
-
-
-# --------------------- procesamiento en la transacción ------------------------
-
-
-def procesar_evento(session, usuario, conversacion, evento) -> list[str]:
-    """Stub de Emma. Conserva las respuestas del piloto."""
-    mensaje = MensajeWhatsapp(tipo=TIPOS.get(evento.tipo, "otros"),
-                              contenido=evento.texto or evento.titulo_boton)
-    return [responder(mensaje, conversacion, usuario)]
-
-
-def procesar_mensaje(session, mensaje, usuario, evento=None, chatbot=procesar_evento):
+def procesar_mensaje(session, mensaje, usuario, evento, chatbot):
     conversacion = session.get(Conversacion, mensaje.conversacion_id, with_for_update=True)
-    if evento is None:
-        tipo = {"texto": "text", "imagen": "image", "respuesta": "button"}.get(mensaje.tipo, "otros")
-        evento = MensajeEntrante(usuario.whatsapp_id, mensaje.meta_message_id, tipo, texto=mensaje.contenido)
     respuestas = chatbot(session, usuario, conversacion, evento)
     if not isinstance(respuestas, list) or any(not isinstance(r, str) or not r for r in respuestas):
         raise ValueError("Respuesta del chatbot inválida")
@@ -237,8 +175,10 @@ def _procesar_registrado(bind, mid, uid, evento, chatbot, analizar):
             with Session(conexion) as sesion:
                 if sesion.get(MensajeWhatsapp, mid).estado_procesamiento == "procesado":
                     return []
-            if evento.tipo == "image" and evento.media_id and analizar:
-                datos = descargar_imagen(evento.media_id)
+            if evento.tipo == "image" and analizar:
+                datos = evento.imagen
+                if datos is None and evento.media_id:
+                    datos = descargar_imagen(evento.media_id)
                 if datos is not None:
                     evento.analisis_imagen = analizar(datos, meta.mime_imagen(datos))
             with Session(conexion) as sesion, sesion.begin():
@@ -289,6 +229,8 @@ def _procesar_lote(bind, eventos, recibos, chatbot, analizar):
 
 @router.post("/whatsapp")
 async def recibir_eventos(request: Request):
+    if os.getenv("WHATSAPP_PROVIDER", "meta") != "meta":
+        return JSONResponse(status_code=404, content={"detail": "Proveedor inactivo"})
     cuerpo = await request.body()
     if not verificar_firma(cuerpo, request.headers.get("X-Hub-Signature-256")):
         return JSONResponse(status_code=403, content={"detail": "Firma inválida"})
@@ -310,10 +252,34 @@ async def recibir_eventos(request: Request):
                 raise ValueError
     except (ValueError, TypeError, AttributeError, KeyError, OverflowError, OSError):
         return JSONResponse(status_code=400, content={"detail": "Evento inválido"})
+    return await procesar_entrega(request, eventos, recibos)
+
+
+@router.post("/openwa")
+async def recibir_openwa(request: Request):
+    if os.getenv("WHATSAPP_PROVIDER") != "openwa":
+        return JSONResponse(status_code=404, content={"detail": "Proveedor inactivo"})
+    cuerpo = bytearray()
+    async for parte in request.stream():
+        if len(cuerpo) + len(parte) > 8 * 1024 * 1024:
+            return JSONResponse(status_code=413, content={"detail": "Evento demasiado grande"})
+        cuerpo.extend(parte)
+    if not verificar_firma(cuerpo, request.headers.get("X-OpenWA-Signature"), "OPENWA_WEBHOOK_SECRET"):
+        return JSONResponse(status_code=403, content={"detail": "Firma inválida"})
+    try:
+        eventos = whatsapp_openwa.extraer(json.loads(cuerpo))
+    except (ValueError, TypeError, AttributeError, KeyError, OverflowError, OSError):
+        return JSONResponse(status_code=400, content={"detail": "Evento inválido"})
+    if not eventos:
+        return {"success": True, "nuevos": 0}
+    return await procesar_entrega(request, eventos, [])
+
+
+async def procesar_entrega(request, eventos, recibos):
     try:
         nuevos = await run_in_threadpool(
             _procesar_lote, engine(), eventos, recibos,
-            getattr(request.app.state, "procesar_evento", procesar_evento),
+            request.app.state.procesar_evento,
             getattr(request.app.state, "analizar_imagen", None))
     except Exception:
         logger.error("Procesamiento pendiente de reintento")
