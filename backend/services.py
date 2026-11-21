@@ -70,6 +70,8 @@ def request_for_user(session: Session, user: Usuario, request_id: int, *, lock=F
 
 
 def create_request(session: Session, user: Usuario, data, *, origin="web"):
+    if user.rol != "residente":
+        raise HTTPException(403, "Se requiere residente para crear solicitudes")
     if not user.activo or not user.piloto_habilitado:
         raise HTTPException(403, "Usuario fuera del piloto")
     ids = [item.material_id for item in data.materiales]

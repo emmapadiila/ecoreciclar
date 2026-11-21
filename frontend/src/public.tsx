@@ -52,6 +52,7 @@ import { useDemo } from "./store";
 import { createRequest } from "./operations";
 import {
   apiToken,
+  authService,
   clearApiToken,
   materialService,
   solicitudService,
@@ -154,7 +155,6 @@ const categories = [
   ],
 ] as const;
 export function Landing() {
-  const { state } = useDemo();
   return (
     <>
       <section className="hero">
@@ -179,8 +179,7 @@ export function Landing() {
               </Link>
             </div>
             <div className="hero-note">
-              <ShieldCheck size={16} /> Demostración interactiva del proyecto
-              piloto
+              <ShieldCheck size={16} /> Plataforma registrada del proyecto piloto
             </div>
           </div>
           <figure className="hero-art">
@@ -257,23 +256,10 @@ export function Landing() {
       <section className="impact-band" id="impacto">
         <div className="wrap section">
           <h2>Nuestro impacto</h2>
-          <p>Indicadores ficticios del proyecto piloto.</p>
-          <div className="impact-numbers">
-            <div>
-              <strong>{number(totalWeight(state.requests))} kg</strong>
-              <span>Material recolectado</span>
-            </div>
-            <div>
-              <strong>
-                {state.requests.filter((r) => r.collection).length}
-              </strong>
-              <span>Recolecciones confirmadas</span>
-            </div>
-            <div>
-              <strong>{number(totalPoints(state, state.requests))}</strong>
-              <span>EcoPuntos otorgados</span>
-            </div>
-          </div>
+          <p>Consulta indicadores reales con la fecha del servidor.</p>
+          <Link className="btn secondary" to="/resultados-diarios">
+            Ver resultados diarios
+          </Link>
         </div>
       </section>
       <section className="wrap section split">
@@ -577,6 +563,15 @@ export function IntakePage() {
     photo: initial?.photo,
     ai: initial?.ai,
   });
+  if (!apiToken())
+    return (
+      <div className="wrap section narrow">
+        <Heading title="Inicia sesión para solicitar" text="Las solicitudes se guardan en tu cuenta registrada." />
+        <Panel>
+          <Link className="btn primary" to="/acceso-registrado">Iniciar sesión</Link>
+        </Panel>
+      </div>
+    );
   if (code)
     return (
       <div className="wrap section narrow">
@@ -598,7 +593,7 @@ export function IntakePage() {
     <div className="wrap section narrow">
       <Heading
         title="Solicita una recolección"
-        text="Usa datos ficticios durante la demostración."
+        text="Completa los datos reales de tu solicitud."
       />
       <ol className="wizard">
         {["Contacto", "Material y horario", "Confirmar"].map((s, i) => (
@@ -669,13 +664,6 @@ export function IntakePage() {
               setServerId(created.id);
               return;
             }
-            let next = "";
-            save((s) => {
-              const result = createRequest(s, draft, actor ?? undefined);
-              next = result.request.id;
-              return result.state;
-            }, "Solicitud registrada.");
-            setCode(next);
           }}
         >
           {step === 0 && (
@@ -833,15 +821,13 @@ export function IntakePage() {
   );
 }
 export function Lookup() {
-  const [params] = useSearchParams(),
-    [query, setQuery] = useState(params.get("codigo") ?? ""),
-    { state } = useDemo();
-  const item = state.requests.find((r) => r.id === query.toUpperCase());
+  const [params] = useSearchParams();
+  const [query, setQuery] = useState(params.get("codigo") ?? "");
   return (
     <div className="wrap section narrow">
       <Heading
         title="Consultar solicitud"
-        text="Consulta demostrativa: usa el código de una solicitud de demostración. La consulta real requerirá verificación segura."
+        text="El seguimiento privado requiere una cuenta residente autenticada."
       />
       <Panel>
         <Form
@@ -861,74 +847,14 @@ export function Lookup() {
       {query && (
         <div className="mt-5">
           <Panel>
-            {item ? (
-              <>
-                <div className="line">
-                  <h2>{item.id}</h2>
-                  <Badge status={item.status} />
-                </div>
-                <p>
-                  Recibida el {dateLabel(item.created)}.
-                  {item.status === "Programada" &&
-                    item.schedule &&
-                    " Recolección el " +
-                      dateLabel(item.schedule.date) +
-                      " a las " +
-                      item.schedule.time +
-                      "."}
-                </p>
-                <Link className="text-link" to="/verificar">
-                  Ver seguimiento privado
-                </Link>
-              </>
-            ) : (
-              <Empty>
-                No encontramos ese código. Comprueba que esté completo.
-              </Empty>
-            )}
+            <p>Inicia sesión para consultar el estado y el historial de tus solicitudes.</p>
+            <Link className="text-link" to="/acceso-registrado">Acceder con mi cuenta</Link>
           </Panel>
         </div>
       )}
     </div>
   );
 }
-function DemoAccess({ resident = false }: { resident?: boolean }) {
-  const { state, login } = useDemo();
-  const navigate = useNavigate();
-  const [role, setRole] = useState<Role>(resident ? "hogar" : "admin");
-  const accounts = state.people.filter((person) => person.active && person.role === role);
-
-  return (
-    <Panel title="Perfil de demostración">
-      <p>Entra con una cuenta ficticia. Los cambios se guardan en este navegador.</p>
-      <Form
-        label="Entrar al panel"
-        onSave={(data) => {
-          const person = accounts.find((account) => account.id === value(data, "account"));
-          if (!person) throw Error("Selecciona una cuenta activa para este perfil.");
-          clearApiToken();
-          login({ id: person.id, role: person.role });
-          navigate("/panel/" + person.role);
-        }}
-      >
-        <Field label="Perfil">
-          <select value={role} onChange={(event) => setRole(event.target.value as Role)}>
-            {(Object.keys(roles) as Role[])
-              .filter((item) => isResident(item) === resident)
-              .map((item) => <option key={item} value={item}>{roles[item]}</option>)}
-          </select>
-        </Field>
-        <Field label="Cuenta">
-          <select name="account" key={role} required>
-            {accounts.length === 0 && <option value="">Sin cuentas activas</option>}
-            {accounts.map((person) => <option key={person.id} value={person.id}>{person.name}</option>)}
-          </select>
-        </Field>
-      </Form>
-    </Panel>
-  );
-}
-
 export function Access() {
   return (
     <div className="wrap section sign-in">
@@ -946,25 +872,64 @@ export function Access() {
           Acceder con una cuenta registrada <ArrowRight size={17} />
         </Link>
       </aside>
-      <DemoAccess />
+      <Panel title="Acceso autenticado">
+        <p>Los roles se verifican con tu cuenta y el servidor FastAPI.</p>
+        <Link className="btn primary" to="/acceso-registrado">Iniciar sesión</Link>
+        <Link className="text-link mt-4" to="/crear-cuenta">Crear cuenta de residente</Link>
+      </Panel>
+    </div>
+  );
+}
+export function CreateAccount() {
+  const navigate = useNavigate();
+  return (
+    <div className="wrap section narrow">
+      <Heading title="Crear cuenta" text="Tu cuenta se registrará como residente." />
+      <Panel>
+        <Form
+          label="Registrarme"
+          onSave={async (data) => {
+            const password = String(data.get("password") ?? "");
+            const confirm = String(data.get("confirm_password") ?? "");
+            if (password !== confirm) throw Error("Las contraseñas no coinciden.");
+            await authService.register({
+              nombre: value(data, "nombre"),
+              correo: value(data, "correo"),
+              password,
+              confirm_password: confirm,
+              telefono: value(data, "telefono") || undefined,
+              direccion: value(data, "direccion") || undefined,
+              tipo_generador: value(data, "tipo_generador") as "hogar" | "negocio",
+            });
+            await authService.login({ correo: value(data, "correo"), password });
+            navigate("/operacion", { replace: true });
+          }}
+        >
+          <Field label="Nombre completo"><input name="nombre" required minLength={2} maxLength={120} /></Field>
+          <Field label="Correo electrónico"><input name="correo" type="email" required autoComplete="email" /></Field>
+          <Field label="Contraseña"><input name="password" type="password" required minLength={12} maxLength={256} autoComplete="new-password" /></Field>
+          <Field label="Confirmar contraseña"><input name="confirm_password" type="password" required minLength={12} maxLength={256} autoComplete="new-password" /></Field>
+          <Field label="Teléfono"><input name="telefono" type="tel" maxLength={20} /></Field>
+          <Field label="Dirección"><input name="direccion" maxLength={1000} /></Field>
+          <Field label="Tipo de generador">
+            <select name="tipo_generador" defaultValue="hogar">
+              <option value="hogar">Hogar</option>
+              <option value="negocio">Negocio</option>
+            </select>
+          </Field>
+        </Form>
+      </Panel>
     </div>
   );
 }
 export function Verify() {
-  const { actor } = useDemo();
   return (
     <div className="wrap section narrow">
       <Heading
         title="Mi EcoConecta"
-        text="Consulta solicitudes y EcoPuntos con un perfil de hogar o negocio."
+        text="Consulta solicitudes y EcoPuntos con tu cuenta registrada."
       />
-      {actor && isResident(actor.role) && (
-        <Link className="text-link mb-4" to={"/panel/" + actor.role}>
-          Volver a mi panel
-        </Link>
-      )}
-      <DemoAccess resident />
-      <Link className="text-link mt-4" to="/acceso-registrado">Acceder con una cuenta registrada</Link>
+      <Link className="btn primary mb-4" to="/acceso-registrado">Acceder con una cuenta registrada</Link>
       <div className="mt-5"><WhatsAppLink>Solicitar por WhatsApp</WhatsAppLink></div>
     </div>
   );

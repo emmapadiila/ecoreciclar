@@ -63,10 +63,25 @@ export const authService = {
   logout: () => {
     clearApiToken();
   },
+  register: (body: {
+    nombre: string;
+    correo: string;
+    password: string;
+    confirm_password: string;
+    telefono?: string;
+    direccion?: string;
+    tipo_generador: "hogar" | "negocio";
+  }) => request<{ id: number; nombre: string; correo: string; rol: string }>(
+    "/auth/register",
+    "POST",
+    body,
+  ),
 };
 export const usuarioService = {
   list: () => request("/usuarios"),
   me: authService.me,
+  create: (body: unknown) => request("/usuarios", "POST", body),
+  update: (id: number, body: unknown) => request("/usuarios/" + id, "PATCH", body),
 };
 export const materialService = {
   list: () => request<Array<{ id: number; nombre: string; categoria: string }>>(
@@ -120,6 +135,9 @@ export const solicitudService = {
     request(idPath(id) + "/" + action, "POST", body),
 };
 export const coordinadorService = { list: () => request("/coordinadores") };
+export const colectivoService = {
+  list: () => request<Array<{ id: number; nombre: string; tipo_flujo: "organico" | "reciclable"; activo: boolean }>>("/colectivos"),
+};
 export const recolectorService = {
   list: () => request<Array<{ id: number; nombre: string; telefono: string | null; colectivo_id: number }>>("/recolectores"),
 };

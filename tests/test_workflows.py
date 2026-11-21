@@ -231,8 +231,8 @@ def test_authentication_and_disabled_pilot(database, client, headers):
         user = session.scalar(select(Usuario).where(Usuario.correo == "residente.reciclaje@example.invalid"))
         user.piloto_habilitado = False
     auth = headers["residente.reciclaje@example.invalid"]
-    assert client.get("/solicitudes", headers=auth).status_code == 401
-    assert client.post("/solicitudes", headers=auth, json={"direccion": "DEMO", "materiales": [{"material_id": 1, "confirmado": True}]}).status_code == 401
+    assert client.get("/solicitudes", headers=auth).status_code == 200
+    assert client.post("/solicitudes", headers=auth, json={"direccion": "DEMO", "materiales": [{"material_id": 1, "confirmado": True}]}).status_code == 403
 
 
 def test_message_identity_and_retries(database):

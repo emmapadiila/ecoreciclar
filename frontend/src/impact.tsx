@@ -189,7 +189,7 @@ export function Impact({ items }: { items: Request[] }) {
     <>
       <Heading
         title="Indicadores EcoImpacto"
-        text="Datos ficticios. Los totales de material se calculan con pesajes confirmados."
+        text="Los totales de material se calculan con pesajes confirmados."
       />
       <div className="filters mb-5">
         {(

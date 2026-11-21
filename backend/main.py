@@ -8,14 +8,14 @@ from zoneinfo import ZoneInfo
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from backend import services
 from backend.whatsapp import router as whatsapp_router
-from backend.auth import auth_secret, current_user, issue_token, verify_password
+from backend.auth import auth_secret, current_user, hash_password, issue_token, verify_password
 from backend.db import database_url, get_session
 from backend.models import (
     Colectivo,
@@ -66,6 +66,53 @@ class Input(BaseModel):
 class Login(Input):
     correo: str = Field(min_length=3, max_length=150)
     password: str = Field(min_length=1, max_length=256)
+
+
+class RegisterInput(Input):
+    nombre: str = Field(min_length=2, max_length=120)
+    correo: str = Field(min_length=3, max_length=150)
+    password: str = Field(min_length=12, max_length=256)
+    confirm_password: str = Field(min_length=12, max_length=256)
+    telefono: str | None = Field(default=None, max_length=20)
+    direccion: str | None = Field(default=None, max_length=1000)
+    tipo_generador: Literal["hogar", "negocio"] = "hogar"
+
+    @field_validator("correo")
+    @classmethod
+    def normalize_correo(cls, value: str):
+        value = value.lower()
+        if "@" not in value:
+            raise ValueError("Correo electrónico inválido")
+        return value
+
+    @field_validator("password")
+    @classmethod
+    def strong_password(cls, value: str):
+        if not any(character.islower() for character in value) or not any(character.isupper() for character in value):
+            raise ValueError("La contraseña debe incluir mayúsculas y minúsculas")
+        if not any(character.isdigit() for character in value):
+            raise ValueError("La contraseña debe incluir al menos un número")
+        return value
+
+
+class CreateUserInput(RegisterInput):
+    rol: Literal["residente", "coordinador", "administrador"]
+    activo: bool = True
+    piloto_habilitado: bool = False
+    colectivo_id: int | None = Field(default=None, gt=0)
+
+
+class UpdateUserInput(Input):
+    nombre: str | None = Field(default=None, min_length=2, max_length=120)
+    correo: str | None = Field(default=None, min_length=3, max_length=150)
+    telefono: str | None = Field(default=None, max_length=20)
+    direccion: str | None = Field(default=None, max_length=1000)
+    tipo_generador: Literal["hogar", "negocio"] | None = None
+    rol: Literal["residente", "coordinador", "administrador"] | None = None
+    activo: bool | None = None
+    piloto_habilitado: bool | None = None
+    password: str | None = Field(default=None, min_length=12, max_length=256)
+    colectivo_id: int | None = Field(default=None, gt=0)
 
 
 class MaterialInput(Input):
@@ -145,11 +192,33 @@ def public_daily_results(session: DB, fecha: date | None = None):
 
 @app.post("/auth/token")
 def login(data: Login, session: DB):
-    user = session.scalar(select(Usuario).where(Usuario.correo == data.correo.lower()))
+    user = session.scalar(select(Usuario).where(Usuario.correo == data.correo.strip().lower()))
     valid = verify_password(data.password, user.password_hash if user else None)
-    if not valid or not user or not user.activo or not user.piloto_habilitado:
-        raise HTTPException(401, "Credenciales inválidas o piloto no autorizado")
+    if not valid or not user or not user.activo:
+        raise HTTPException(401, "Credenciales inválidas")
     return {"access_token": issue_token(user.id), "token_type": "bearer"}
+
+
+@app.post("/auth/register", status_code=201)
+def register(data: RegisterInput, session: DB):
+    if data.password != data.confirm_password:
+        raise HTTPException(422, "Las contraseñas no coinciden")
+    if session.scalar(select(Usuario.id).where(Usuario.correo == data.correo)):
+        raise HTTPException(409, "Ya existe una cuenta con ese correo")
+    user = Usuario(
+        nombre=data.nombre,
+        correo=data.correo,
+        telefono=data.telefono,
+        direccion=data.direccion,
+        tipo_generador=data.tipo_generador,
+        rol="residente",
+        activo=True,
+        piloto_habilitado=False,
+        password_hash=hash_password(data.password),
+    )
+    session.add(user)
+    session.flush()
+    return {"id": user.id, "nombre": user.nombre, "correo": user.correo, "rol": user.rol}
 
 
 @app.get("/auth/me")
@@ -170,10 +239,124 @@ def authenticated_user(user: User, session: DB):
         "id": user.id,
         "nombre": user.nombre,
         "correo": user.correo,
+        "telefono": user.telefono,
+        "direccion": user.direccion,
         "rol": user.rol,
         "tipo_generador": user.tipo_generador,
+        "activo": user.activo,
+        "piloto_habilitado": user.piloto_habilitado,
         "colectivo_tipo": colectivo_tipo,
     }
+
+
+def require_admin(user: Usuario):
+    if user.rol != "administrador":
+        raise HTTPException(403, "Se requiere administrador")
+
+
+def user_output(user: Usuario, colectivo_id: int | None = None):
+    return {
+        "id": user.id,
+        "nombre": user.nombre,
+        "correo": user.correo,
+        "telefono": user.telefono,
+        "direccion": user.direccion,
+        "rol": user.rol,
+        "tipo_generador": user.tipo_generador,
+        "activo": user.activo,
+        "piloto_habilitado": user.piloto_habilitado,
+        "colectivo_id": colectivo_id,
+    }
+
+
+@app.get("/usuarios")
+def list_users(session: DB, user: User):
+    require_admin(user)
+    rows = session.execute(
+        select(Usuario, CoordinadorColectivo.colectivo_id)
+        .outerjoin(CoordinadorColectivo, CoordinadorColectivo.usuario_id == Usuario.id)
+        .order_by(Usuario.id)
+    )
+    seen = set()
+    output = []
+    for item, colectivo_id in rows:
+        if item.id not in seen:
+            output.append(user_output(item, colectivo_id))
+            seen.add(item.id)
+    return output
+
+
+@app.post("/usuarios", status_code=201)
+def create_user(data: CreateUserInput, session: DB, user: User):
+    require_admin(user)
+    if data.password != data.confirm_password:
+        raise HTTPException(422, "Las contraseñas no coinciden")
+    if data.rol == "administrador":
+        raise HTTPException(403, "La creación de administradores requiere autorización explícita adicional")
+    if data.rol == "coordinador" and data.colectivo_id is None:
+        raise HTTPException(422, "El coordinador debe pertenecer a un colectivo")
+    if data.colectivo_id is not None:
+        collective = session.get(Colectivo, data.colectivo_id)
+        if not collective or not collective.activo:
+            raise HTTPException(422, "Colectivo inválido")
+    correo = data.correo.lower()
+    if session.scalar(select(Usuario.id).where(Usuario.correo == correo)):
+        raise HTTPException(409, "Ya existe una cuenta con ese correo")
+    created = Usuario(
+        nombre=data.nombre, correo=correo, telefono=data.telefono, direccion=data.direccion,
+        tipo_generador=data.tipo_generador, rol=data.rol, activo=data.activo,
+        piloto_habilitado=data.piloto_habilitado, password_hash=hash_password(data.password),
+    )
+    session.add(created)
+    session.flush()
+    if data.rol == "coordinador":
+        session.add(CoordinadorColectivo(usuario_id=created.id, colectivo_id=data.colectivo_id))
+        session.flush()
+    return user_output(created, data.colectivo_id)
+
+
+@app.patch("/usuarios/{user_id}")
+def update_user(user_id: int, data: UpdateUserInput, session: DB, user: User):
+    require_admin(user)
+    target = session.get(Usuario, user_id)
+    if not target:
+        raise HTTPException(404, "Usuario no encontrado")
+    if user_id == user.id and data.rol not in (None, "administrador"):
+        raise HTTPException(403, "No puede cambiarse su propio rol administrativo")
+    if data.rol == "administrador":
+        raise HTTPException(403, "La asignación de administrador requiere autorización explícita adicional")
+    if data.correo is not None:
+        data.correo = data.correo.lower()
+        duplicate = session.scalar(select(Usuario.id).where(Usuario.correo == data.correo, Usuario.id != user_id))
+        if duplicate:
+            raise HTTPException(409, "Ya existe una cuenta con ese correo")
+    for field in ("nombre", "correo", "telefono", "direccion", "tipo_generador", "rol", "activo", "piloto_habilitado"):
+        value = getattr(data, field)
+        if value is not None:
+            setattr(target, field, value)
+    if data.password:
+        target.password_hash = hash_password(data.password)
+    membership = session.scalar(select(CoordinadorColectivo).where(
+        CoordinadorColectivo.usuario_id == target.id,
+    ))
+    if data.rol == "coordinador" or (target.rol == "coordinador" and data.colectivo_id is not None):
+        if data.colectivo_id is None:
+            raise HTTPException(422, "El coordinador debe pertenecer a un colectivo")
+        collective = session.get(Colectivo, data.colectivo_id)
+        if not collective or not collective.activo:
+            raise HTTPException(422, "Colectivo inválido")
+        if membership:
+            membership.colectivo_id = data.colectivo_id
+            membership.activo = True
+        else:
+            session.add(CoordinadorColectivo(usuario_id=target.id, colectivo_id=data.colectivo_id))
+    elif target.rol != "coordinador" and membership:
+        membership.activo = False
+    session.flush()
+    colectivo_id = data.colectivo_id
+    if colectivo_id is None and membership:
+        colectivo_id = membership.colectivo_id
+    return user_output(target, colectivo_id)
 
 
 @app.get("/materiales")
@@ -196,6 +379,29 @@ def collectors(session: DB, user: User):
     ).order_by(Recolector.nombre, Recolector.id))
     return [{"id": worker.id, "nombre": worker.nombre, "telefono": worker.telefono,
              "colectivo_id": worker.colectivo_id} for worker in workers]
+
+
+@app.get("/colectivos")
+def collectives(session: DB, user: User):
+    require_admin(user)
+    return [{"id": item.id, "nombre": item.nombre, "tipo_flujo": item.tipo_flujo, "activo": item.activo}
+            for item in session.scalars(select(Colectivo).order_by(Colectivo.nombre))]
+
+
+@app.get("/coordinadores")
+def coordinators(session: DB, user: User):
+    require_admin(user)
+    rows = session.execute(
+        select(Usuario, Colectivo)
+        .join(CoordinadorColectivo, CoordinadorColectivo.usuario_id == Usuario.id)
+        .join(Colectivo, Colectivo.id == CoordinadorColectivo.colectivo_id)
+        .where(Usuario.rol == "coordinador", CoordinadorColectivo.activo, Usuario.activo)
+        .order_by(Usuario.nombre)
+    )
+    return [{"id": item.id, "nombre": item.nombre, "correo": item.correo,
+             "colectivo_id": collective.id, "colectivo": collective.nombre,
+             "tipo_flujo": collective.tipo_flujo}
+            for item, collective in rows]
 
 
 @app.post("/solicitudes", status_code=201)

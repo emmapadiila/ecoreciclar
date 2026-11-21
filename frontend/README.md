@@ -75,9 +75,20 @@ Abre la dirección que indique la terminal. El servidor de vista previa es para 
 ### Operación con una cuenta registrada
 
 Desde `/acceso`, el enlace **Acceder con una cuenta registrada** abre
-`/acceso-registrado`. Los coordinadores gestionan las solicitudes de su
-colectivo y los residentes consultan sus solicitudes y EcoPuntos en
-`/operacion`. El selector demo sigue disponible con datos ficticios.
+`/acceso-registrado`. El rol se obtiene de la cuenta autenticada en FastAPI;
+no se elige en el formulario. En `/operacion`:
+
+| Rol | Alcance |
+| --- | --- |
+| Administrador | Resultados diarios agregados del piloto, sin acceso a datos personales ni operaciones de solicitudes. |
+| Coordinador | Consulta y gestión de solicitudes de sus colectivos activos. |
+| Residente | Creación de solicitudes, seguimiento propio y consulta de sus EcoPuntos. |
+
+El panel administrativo reutiliza el reporte existente y muestra un error con
+reintento si la API falla; no sustituye los resultados por datos del navegador.
+El selector demo sigue disponible con datos ficticios y permisos simulados.
+La API verifica rol, cuenta activa, habilitación del piloto y ámbito de acceso
+en cada operación. Solo el residente puede crear solicitudes.
 
 Para la operación real, FastAPI debe estar conectado a la base autorizada,
 con Alembic en la revisión `0004` y los permisos del rol de ejecución

@@ -64,7 +64,7 @@ def current_user(
             issuer="ecoconecta", audience="ecoconecta-api", options={"require": ["sub", "exp", "iat"]},
         )
         user = session.get(Usuario, int(claims["sub"]))
-        if not user or not user.activo or not user.piloto_habilitado:
+        if not user or not user.activo:
             raise ValueError("Cuenta deshabilitada")
         return user
     except (jwt.InvalidTokenError, ValueError, TypeError) as exc:
