@@ -19,6 +19,21 @@ services:
       timeout: 5s
       retries: 12
       start_period: 10s
+  openwa:
+    image: ghcr.io/rmyndharis/openwa:0.31.0
+    profiles: [openwa]
+    restart: unless-stopped
+    environment:
+      SSRF_ALLOWED_HOSTS: api
+      MEDIA_DOWNLOAD_ENABLED: "true"
+      MEDIA_DOWNLOAD_MAX_BYTES: "5242880"
+      RESOLVE_LID_TO_PHONE: "true"
+      WEBHOOK_MEDIA_INLINE_MAX_BYTES: "5242880"
+      WEBHOOK_MAX_PAYLOAD_BYTES: "8388608"
+      WEBHOOK_TIMEOUT: "60000"
+    volumes: [openwa_data:/app/data]
+    ports: ["127.0.0.1:2785:2785"]
+    networks: [outbound]
   adminer:
     image: adminer:6.3.0
     profiles: [tools]
@@ -62,6 +77,15 @@ services:
       AUTH_SECRET: ${AUTH_SECRET:-}
       TOKEN_MINUTES: ${TOKEN_MINUTES:-30}
       CORS_ORIGINS: ${CORS_ORIGINS:-}
+      DB_PANEL_USER: ${DB_PANEL_USER:-ecoconecta_panel}
+      DB_PANEL_PASSWORD: ${DB_PANEL_PASSWORD:-}
+      WHATSAPP_PROVIDER: ${WHATSAPP_PROVIDER:-meta}
+      OPENWA_URL: ${OPENWA_URL:-http://openwa:2785}
+      OPENWA_SESSION_ID: ${OPENWA_SESSION_ID:-}
+      OPENWA_API_KEY: ${OPENWA_API_KEY:-}
+      OPENWA_WEBHOOK_SECRET: ${OPENWA_WEBHOOK_SECRET:-}
+      ECO_IA_URL: ${ECO_IA_URL:-}
+      ECO_IA_TIMEOUT: ${ECO_IA_TIMEOUT:-15}
       WHATSAPP_VERIFY_TOKEN: ${WHATSAPP_VERIFY_TOKEN:-}
       META_APP_SECRET: ${META_APP_SECRET:-}
       WHATSAPP_ACCESS_TOKEN: ${WHATSAPP_ACCESS_TOKEN:-}
@@ -78,6 +102,7 @@ services:
       timeout: 5s
       retries: 6
 volumes:
+  openwa_data:
   postgres_data:
 networks:
   database:

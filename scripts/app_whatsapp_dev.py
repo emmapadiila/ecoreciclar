@@ -14,7 +14,11 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+from backend.conversacion import procesar_evento
+from backend.ia_residuos import analizar_imagen
 from backend.whatsapp import router as whatsapp_router
 
 app = FastAPI(title="EcoConecta 360 - Webhook WhatsApp (solo desarrollo)")
+app.state.procesar_evento = procesar_evento
+app.state.analizar_imagen = analizar_imagen
 app.include_router(whatsapp_router)

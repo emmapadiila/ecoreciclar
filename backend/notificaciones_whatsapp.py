@@ -8,7 +8,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
-from backend import whatsapp_meta as meta
+from backend import whatsapp_meta as meta, whatsapp_openwa
 from backend.db import engine
 from backend.models import Conversacion, MensajeWhatsapp, Notificacion, Usuario
 
@@ -56,7 +56,8 @@ def despachar(bind, nota_id):
         referencia = _referencia(nota.id, nota.intentos)
         causa = None
         try:
-            carga = _carga(nota, ultima)
+            openwa = os.getenv("WHATSAPP_PROVIDER", "meta") == "openwa"
+            carga = meta.texto(nota.mensaje) if openwa else _carga(nota, ultima)
         except meta.ErrorMeta as error:
             carga = None
             causa = str(error)
@@ -72,7 +73,8 @@ def despachar(bind, nota_id):
         return
     fallo = None
     try:
-        wamid = meta.enviar(destino, carga, referencia)
+        wamid = (whatsapp_openwa.enviar(destino, carga["text"]["body"]) if openwa
+                 else meta.enviar(destino, carga, referencia))
     except meta.ErrorMeta as error:
         fallo = error
         logger.warning("Notificación %d: %s", nota_id, error)

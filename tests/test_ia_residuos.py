@@ -118,21 +118,27 @@ def test_plazo_total_con_motor_lento(motor, monkeypatch):
 
 
 @pytest.fixture
-def runtime_ia(database, monkeypatch):
+def runtime_ia(database, monkeypatch, request):
     with database.connect() as conn:
         if not conn.scalar(text("SELECT rolsuper OR rolcreaterole FROM pg_roles WHERE rolname=current_user")):
             pytest.skip("La prueba de privilegios requiere un administrador del clúster de tests")
     nombre = "eco_ia_" + secrets.token_hex(6)
     clave = secrets.token_urlsafe(32)
-    monkeypatch.setenv("DB_APP_USER", nombre)
-    monkeypatch.setenv("DB_APP_PASSWORD", clave)
+    panel = getattr(request, "param", None) == "panel"
+    prefijo = "DB_PANEL" if panel else "DB_APP"
+    monkeypatch.setenv(prefijo + "_USER", nombre)
+    monkeypatch.setenv(prefijo + "_PASSWORD", clave)
     monkeypatch.setenv("TEST_DATABASE_URL", database.url.render_as_string(hide_password=False))
-    monkeypatch.setattr(sys, "argv", ["provision_runtime", "--test"])
+    monkeypatch.setattr(sys, "argv", ["provision_runtime", "--test"] + (["--panel"] if panel else []))
     provision_runtime.main()
     limitado = create_engine(database.url.set(username=nombre, password=clave))
     try:
         yield limitado
     finally:
+        from backend.db import panel_engine
+        if panel:
+            panel_engine().dispose()
+            panel_engine.cache_clear()
         limitado.dispose()
         with database.begin() as conn:
             cursor = conn.connection.driver_connection
@@ -160,8 +166,6 @@ def test_webhook_con_runtime_texto_foto_y_fallback(database, client, headers, ru
     foto = PNG
     monkeypatch.setattr(whatsapp, "descargar_imagen", lambda _: foto)
     monkeypatch.setattr(whatsapp.outbox, "despachar", lambda *_: None)
-    monkeypatch.setattr(app.state, "procesar_evento", procesar_evento, raising=False)
-    monkeypatch.setattr(app.state, "analizar_imagen", ia.analizar_imagen, raising=False)
     numero = 0
 
     def enviar(texto=None):
@@ -234,3 +238,72 @@ def test_webhook_con_runtime_texto_foto_y_fallback(database, client, headers, ru
         evento_ajeno = whatsapp.MensajeEntrante("DEMO-WA-REC", "wamid.ajeno", "text", texto="Actualizar mis datos")
         with pytest.raises(ValueError, match="identidad"):
             procesar_evento(session, usuario, conversacion, evento_ajeno)
+
+
+@pytest.mark.parametrize("runtime_ia", ["panel"], indirect=True)
+def test_openwa_foto_confirmacion_y_panel(database, client, headers, runtime_ia, motor, monkeypatch):
+    from backend import whatsapp_openwa
+
+    numero = "573000000001"
+    chat = numero + "@c.us"
+    monkeypatch.setenv("WHATSAPP_PROVIDER", "openwa")
+    monkeypatch.setenv("OPENWA_SESSION_ID", "sesion")
+    monkeypatch.setenv("OPENWA_URL", "http://openwa:2785")
+    monkeypatch.setenv("OPENWA_API_KEY", "prueba")
+    monkeypatch.setenv("OPENWA_WEBHOOK_SECRET", "secreto")
+    respuestas = []
+    def enviar(url, *, headers, timeout, json):
+        assert url == "http://openwa:2785/api/sessions/sesion/messages/send-text"
+        assert json["chatId"] == chat and headers["X-API-Key"] == "prueba"
+        respuestas.append(json["text"])
+        return httpx.Response(201, request=httpx.Request("POST", url), json={"messageId": str(len(respuestas))})
+
+    monkeypatch.setattr(whatsapp_openwa.httpx, "post", enviar)
+    def reconocer(req):
+        assert PNG in req.content and b'name="imagen"' in req.content
+        return httpx.Response(200, json=respuesta("aprovechable"))
+
+    motor(reconocer)
+    contador = 0
+    def mensaje(body="", *, mid=None, image=False, sesion="sesion", firma=True, **fields):
+        nonlocal contador
+        contador += 1
+        data = dict(id=mid or str(contador), chatId=chat, **{"from": chat}, timestamp=1800000000,
+                    type="image" if image else "text", body=body, fromMe=False, isGroup=False, kind="individual")
+        data.update(fields)
+        if image:
+            data["media"] = {"mimetype": "image/png", "data": base64.b64encode(PNG).decode()}
+        raw = json.dumps({"sessionId": sesion, "event": "message.received", "data": data}).encode()
+        dig = hmac.new(b"secreto", raw, hashlib.sha256).hexdigest()
+        r = client.post("/webhooks/openwa", content=raw, headers={"X-OpenWA-Signature": "sha256=" + dig} if firma else {})
+        assert r.status_code == (200 if firma else 403)
+        return r.json().get("nuevos")
+
+    mensaje("Hola", firma=False)
+    assert mensaje("Hola", sesion="ajena") == mensaje("Hola", fromMe=True) == mensaje("Hola", isGroup=True) == 0
+    for t in ("Hola", "Residente Prueba", "Hogar", "Casa prueba 123", "1"):
+        assert mensaje(t) == 1
+    admin = headers["admin@example.invalid"]
+    usuarios = client.get("/usuarios", headers=admin).json()
+    uid = next(u["id"] for u in usuarios if u["whatsapp_id"] == numero)
+    assert client.patch(f"/usuarios/{uid}", json={"piloto_habilitado": True}, headers=admin).status_code == 200
+    for t in ("1", "reciclable", "foto"):
+        mensaje(t)
+    mensaje(image=True)
+    assert "Revisa estos materiales" in respuestas[-1]
+    mensaje("corregir")
+    mensaje("Tengo botellas plásticas")
+    assert "Revisa estos materiales" in respuestas[-1]
+    for t in ("continuar", "1", "Tarde", "omitir"):
+        mensaje(t)
+    with Session(database) as session:
+        assert not session.scalar(select(Solicitud).where(Solicitud.usuario_id == uid))
+    assert mensaje("confirmar solicitud", mid="confirmacion") == 1
+    total = len(respuestas)
+    assert mensaje("confirmar solicitud", mid="confirmacion") == 0 and len(respuestas) == total
+    mensaje("confirmar solicitud")
+    with Session(database) as session:
+        unica, = session.scalars(select(Solicitud).where(Solicitud.usuario_id == uid))
+        assert unica.origen == "whatsapp" and any(unica.codigo in r for r in respuestas)
+        filas = client.get("/solicitudes", headers=headers["coordinador.reciclaje@example.invalid"]).json()
+        assert sum(f["codigo"] == unica.codigo for f in filas) == 1

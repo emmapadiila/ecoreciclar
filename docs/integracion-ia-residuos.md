@@ -2,7 +2,7 @@
 
 ## Auditoría
 
-El webhook de `ecoreciclar` ya descarga fotos y consulta `app.state.analizar_imagen` antes de invocar el procesador conversacional. La conversación de Emma acepta los elementos de `residuos` cuando `estado` es `completado` y resuelve el material por nombre o descripción contra el catálogo de PostgreSQL. La aplicación aún requiere que Manuel registre el procesador y el analizador en el punto de composición.
+El webhook de `ecoreciclar` ya descarga fotos y consulta `app.state.analizar_imagen` antes de invocar el procesador conversacional. La conversación de Emma acepta los elementos de `residuos` cuando `estado` es `completado` y resuelve el material por nombre o descripción contra el catálogo de PostgreSQL. FastAPI registra ambos componentes en `backend/main.py`. La [guía de OpenWA](whatsapp-openwa.md) detalla la prueba en WhatsApp.
 
 El checkout local de `Hackaton_reci` en `d9f1bc0` implementa `POST /api/ia/analizar-residuos` en `api/main.py`. El análisis combina cajas, clasificación binaria, comprobación de fondo y material contextual en `api/residuos.py` y `api/vision_contextual.py`. El adaptador llama solo a ese endpoint. Toda creación de solicitudes sigue el servicio de negocio de EcoConecta.
 
@@ -26,7 +26,7 @@ Configurar en el proceso de FastAPI de EcoConecta:
 
 El reconocedor debe tener sus pesos locales habilitados con `ECO_LOCAL_MODELS=1` y los artefactos accesibles. Arrancar y calentar el reconocedor antes del ensayo. El primer uso puede tardar más que el límite HTTP. Un plazo vencido libera la espera en el webhook. El cómputo ya iniciado en el proceso remoto puede continuar.
 
-Para que revise y aplique el responsable de composición de FastAPI:
+El punto de composición registra ambos componentes de esta forma.
 
 ```python
 from backend.conversacion import procesar_evento
@@ -54,7 +54,7 @@ El adaptador síncrono recibe `(datos, mime_type, descripcion="", referencia=Non
 
 En un entorno de pruebas autorizado, utilizar `python -m scripts.provision_runtime --test`. Los permisos de la base del piloto deben revisarse y aplicarse por su responsable. El cambio se reproduce desde el provisionamiento y no precisa una migración.
 
-Manuel registra los dos hooks y prueba primero un mensaje de texto, luego una foto con descarga y respuesta reales. Emma conserva la validación del catálogo y la confirmación del residente. El servicio de negocio asigna el colectivo y el panel consulta las solicitudes autorizadas por el mismo endpoint existente.
+El ensayo con teléfonos comienza con un mensaje de texto y continúa con una foto. Emma conserva la validación del catálogo y la confirmación del residente. El servicio de negocio asigna el colectivo y el panel consulta las solicitudes autorizadas por el mismo endpoint existente.
 
 ## Comprobación
 

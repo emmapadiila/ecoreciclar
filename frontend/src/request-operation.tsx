@@ -165,8 +165,10 @@ function AdminUsers() {
     setRefresh((count) => count + 1);
   }
   async function togglePilot(id: number, enabled: boolean) {
-    await usuarioService.update(id, { piloto_habilitado: enabled });
-    setRefresh((count) => count + 1);
+    try {
+      await usuarioService.update(id, { piloto_habilitado: enabled });
+      setRefresh((count) => count + 1);
+    } catch (cause) { setError(errorText(cause)); }
   }
   async function toggleActive(id: number, enabled: boolean) {
     await usuarioService.update(id, { activo: enabled });
@@ -178,9 +180,9 @@ function AdminUsers() {
     {error && <p role="alert" className="error">{error}</p>}
     <Panel>
       {!users.length && !error ? <p role="status">Cargando usuarios…</p> :
-        <div className="table-wrap"><table><thead><tr><th>Nombre</th><th>Correo</th><th>Rol</th><th>Estado</th><th>Piloto</th><th>Acciones</th></tr></thead>
+        <div className="table-wrap"><table><thead><tr><th>Nombre</th><th>Correo</th><th>WhatsApp</th><th>Rol</th><th>Estado</th><th>Piloto</th><th>Acciones</th></tr></thead>
           <tbody>{users.map((person) => <tr key={String(person.id)}>
-            <td>{String(person.nombre)}</td><td>{String(person.correo ?? "—")}</td><td>{String(person.rol)}</td>
+            <td>{String(person.nombre)}</td><td>{String(person.correo ?? "—")}</td><td>{String(person.whatsapp_id ?? "—")}</td><td>{String(person.rol)}</td>
             <td>{person.activo ? "Activo" : "Inactivo"}</td>
             <td>{person.piloto_habilitado ? "Habilitado" : "Pendiente"}</td>
             <td><div className="actions">
