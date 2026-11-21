@@ -101,6 +101,24 @@ services:
       interval: 10s
       timeout: 5s
       retries: 6
+  db-setup:
+    build: .
+    profiles: [setup]
+    environment:
+      PGHOST: db
+      PGPORT: 5432
+      PGDATABASE: ${POSTGRES_DB:-ecoconecta}
+      PGUSER: ${POSTGRES_USER:-ecoconecta}
+      PGPASSWORD: ${POSTGRES_PASSWORD:?Defina POSTGRES_PASSWORD en .env}
+      DB_APP_USER: ${DB_APP_USER:-ecoconecta_app}
+      DB_APP_PASSWORD: ${DB_APP_PASSWORD:-}
+      DB_PANEL_USER: ${DB_PANEL_USER:-ecoconecta_panel}
+      DB_PANEL_PASSWORD: ${DB_PANEL_PASSWORD:-}
+    networks: [database]
+    depends_on:
+      db:
+        condition: service_healthy
+    command: [sh, -ec, 'test -n "$DB_APP_PASSWORD" || { echo "Defina DB_APP_PASSWORD en .env" >&2; exit 1; }; alembic upgrade head && python -m scripts.provision_runtime']
 volumes:
   openwa_data:
   postgres_data:

@@ -7,3 +7,5 @@
 backups
 *.dump
 uploads
+**/node_modules
+**/dist

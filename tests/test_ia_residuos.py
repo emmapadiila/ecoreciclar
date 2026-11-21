@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import secrets
 import sys
+import time
 
 import httpx
 import pytest
@@ -156,6 +157,50 @@ def test_runtime_solo_puede_actualizar_columnas_permitidas(runtime_ia):
         with runtime_ia.begin() as conn:
             conn.execute(text("UPDATE usuarios SET piloto_habilitado=true WHERE whatsapp_id='DEMO-WA-REC'"))
     assert error.value.orig.sqlstate == "42501"
+
+
+@pytest.mark.parametrize(("categorias", "status", "esperado"), [
+    (("organico",), 200, "tipo orgánico"),
+    (("aprovechable",), 200, "tipo aprovechable"),
+    (("organico", "aprovechable"), 200, "tipo orgánico|tipo aprovechable"),
+    ((), 200, "Envía otra foto"),
+    ((), 503, "No pude analizar la foto"),
+    (None, 200, "No pude analizar la foto"),
+])
+def test_primera_foto_firmada_y_duplicado(database, client, motor, monkeypatch, categorias, status, esperado):
+    assert app.state.procesar_evento is procesar_evento
+    assert app.state.analizar_imagen is ia.analizar_imagen
+    monkeypatch.setenv("WHATSAPP_PROVIDER", "meta")
+    monkeypatch.setenv("META_APP_SECRET", "mock-webhook-ia-local")
+    monkeypatch.delenv("WHATSAPP_PHONE_NUMBER_ID", raising=False)
+    descargas, consultas, envios = [], [], []
+
+    def descargar(media_id):
+        descargas.append(media_id)
+        return PNG if categorias is not None else None
+
+    def reconocer(request):
+        consultas.append(request)
+        return httpx.Response(status, json=respuesta(*categorias))
+
+    monkeypatch.setattr(whatsapp, "descargar_imagen", descargar)
+    monkeypatch.setattr(whatsapp.meta, "enviar", lambda *args: envios.append(args) or "wamid.salida-foto")
+    motor(reconocer)
+    mensaje = {"from": "DEMO-WA-PRIMERA-FOTO", "id": "wamid.primera-foto", "type": "image",
+               "timestamp": str(int(time.time())), "image": {"id": "123"}}
+    cuerpo = json.dumps({"entry": [{"changes": [{"field": "messages", "value": {"messages": [mensaje]}}]}]}).encode()
+    firma = hmac.new(b"mock-webhook-ia-local", cuerpo, hashlib.sha256).hexdigest()
+    for nuevos in (1, 0):
+        r = client.post("/webhooks/whatsapp", content=cuerpo, headers={"X-Hub-Signature-256": "sha256=" + firma})
+        assert r.status_code == 200 and r.json()["nuevos"] == nuevos
+    assert descargas == ["123"] and len(consultas) == (categorias is not None)
+    assert len(envios) == 1
+    with Session(database) as session:
+        usuario = session.scalar(select(Usuario).where(Usuario.whatsapp_id == mensaje["from"]))
+        salida = session.scalar(select(Notificacion.mensaje).where(Notificacion.usuario_id == usuario.id))
+        assert all(fragmento in salida for fragmento in esperado.split("|"))
+        assert session.scalar(select(Conversacion.estado_actual).where(Conversacion.usuario_id == usuario.id)) == "inicio"
+        assert not session.scalar(select(Solicitud.id).where(Solicitud.usuario_id == usuario.id))
 
 
 def test_webhook_con_runtime_texto_foto_y_fallback(database, client, headers, runtime_ia, motor, monkeypatch):

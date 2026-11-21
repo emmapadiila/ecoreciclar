@@ -67,6 +67,20 @@ API: <http://127.0.0.1:8000/docs>. Salud: <http://127.0.0.1:8000/health>. El hea
 
 ## Frontend y API
 
+### Prueba local con Docker, sin instalar Python ni Node
+
+Configura `.env` a partir de `.env.example` con valores locales para `POSTGRES_PASSWORD`, `DB_APP_PASSWORD` y `AUTH_SECRET` (usa un secreto aleatorio de al menos 32 caracteres). Si ya existe un volumen de PostgreSQL, conserva las contraseñas con las que se creó.
+
+```powershell
+docker compose run --rm --build db-setup
+docker compose run --rm db-setup python -m scripts.seed
+docker compose --profile app up -d --build --wait api web
+```
+
+El primer comando inicia PostgreSQL, aplica las migraciones y configura el rol de FastAPI. El segundo carga un catálogo y solicitudes ficticias para pruebas locales. Abre <http://127.0.0.1:5173> para probar la web y <http://127.0.0.1:8000/health> para comprobar la conexión con PostgreSQL. Los datos quedan en el volumen `postgres_data`.
+
+Para entrar como residente del piloto, ejecuta `docker compose run --rm db-setup python -m scripts.set_password`, escribe `residente.reciclaje@example.invalid` y elige una contraseña. Después abre <http://127.0.0.1:5173/login> e inicia sesión con esa cuenta ficticia.
+
 El frontend se puede ejecutar junto a la API mediante el perfil `app`:
 
 ```bash

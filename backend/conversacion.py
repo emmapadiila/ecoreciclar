@@ -37,7 +37,28 @@ ALIAS = {
 }
 CAPTURA = {"materiales", "metodo", "espera_imagen", "revision_material", "direccion",
            "direccion_nueva", "horario", "observaciones", "confirmacion", "editar"}
+CAPTURA_FOTO = {"tipo", "metodo", "espera_imagen", "materiales"}
 CADUCIDAD = timedelta(hours=24)
+
+
+def resumen_foto(analisis):
+    if not analisis or analisis["estado"] != "completado":
+        return "No pude analizar la foto. Puedes reenviarla o describir el residuo por texto."
+
+    residuos = analisis["residuos"]
+    lineas = []
+    for categoria, etiqueta in (("organico", "orgánico"), ("reciclable", "aprovechable")):
+        grupo = [item for item in residuos if item["categoria"] == categoria]
+        if grupo:
+            materiales = list(dict.fromkeys(item["material"] for item in grupo if item.get("material")))
+            detalle = f" ({', '.join(materiales[:5])})" if materiales else ""
+            lineas.append(f"• {len(grupo)} de tipo {etiqueta}{detalle}")
+    mensaje = "En la foto parece haber:\n" + "\n".join(lineas) if lineas else ""
+    if not lineas:
+        return "No pude identificar el residuo con claridad. Envía otra foto o describe el material por texto."
+    if any(item["categoria"] not in CATEGORIAS for item in residuos):
+        return mensaje + "\nHay objetos dudosos. Envía otra foto o describe el material por texto."
+    return mensaje
 
 
 class MaterialConfirmado(BaseModel):
@@ -170,6 +191,13 @@ def procesar_evento(session: Session, usuario: Usuario, conversacion: Conversaci
     opcion = normalizar(texto) if len(texto) <= 2000 else ""
     if not usuario.activo or usuario.rol != "residente":
         return responder("inicio", {}, "Esta cuenta no está habilitada para usar el asistente de residentes.")
+    foto = evento.tipo in ("image", "imagen")
+    analisis = getattr(evento, "analisis_imagen", None)
+    if foto and (estado not in CAPTURA_FOTO or not registro.registrado(usuario) or not usuario.piloto_habilitado):
+        mensaje = resumen_foto(analisis)
+        if estado in ("inicio", "menu"):
+            mensaje += "\nEscribe «Hola» para usar el asistente."
+        return responder(estado, datos, mensaje)
     cancelar = opcion in ("cancelar", "cancelar solicitud", "cancelar registro") or (
         opcion == "3" and estado in ("revision_material", "confirmacion", "registro_confirmacion"))
     if cancelar or opcion in ("menu", "volver al menu", "inicio"):
@@ -252,18 +280,18 @@ def procesar_evento(session: Session, usuario: Usuario, conversacion: Conversaci
                    "1. Confirmar solicitud · 2. Modificar información · 3. Cancelar.")
         return responder("confirmacion", borrador, mensaje)
 
-    if estado == "tipo":
+    if estado == "tipo" and not foto:
         tipos = {"1": "organico", "organico": "organico", "organicos": "organico",
                  "2": "reciclable", "reciclable": "reciclable", "reciclables": "reciclable",
                  "3": None, "no estoy seguro": None}
         return responder("metodo", {"categoria": tipos[opcion]}, METODO) if opcion in tipos else responder(estado, datos, TIPOS)
-    if estado in ("metodo", "espera_imagen", "materiales"):
+    if estado in CAPTURA_FOTO:
         materiales = catalogo(session)
         incompleto = False
-        if evento.tipo in ("image", "imagen"):
-            encontrados, incompleto = materiales_ia(getattr(evento, "analisis_imagen", None), materiales)
+        if foto:
+            encontrados, incompleto = materiales_ia(analisis, materiales)
             if not encontrados:
-                return ofrecer_materiales(datos, "No pude confirmar materiales del catálogo en esa foto. Puedes indicarlos por texto.")
+                return ofrecer_materiales(datos, resumen_foto(analisis) + "\nPuedes elegir materiales del catálogo por texto.")
         elif estado == "metodo" and opcion in ("1", "foto", "enviar una fotografia"):
             return responder("espera_imagen", datos, "Envía una foto o escribe «texto» para continuar manualmente.")
         elif opcion in ("texto", "escribir", "escribir los materiales que tienes") or (estado == "metodo" and opcion == "2"):
@@ -292,8 +320,9 @@ def procesar_evento(session: Session, usuario: Usuario, conversacion: Conversaci
         avisos = " Algunos objetos quedaron fuera del catálogo." if incompleto else ""
         if len(agrupados(encontrados)) > 1:
             avisos += " Al confirmar se crearán solicitudes separadas por colectivo."
+        revision = f"Revisa estos materiales:\n{lista}\n{avisos}\n1. Sí, continuar · 2. Corregir materiales · 3. Cancelar."
         return responder("revision_material", {**datos, "materiales": [m.id for m in encontrados]},
-                         f"Revisa estos materiales:\n{lista}\n{avisos}\n1. Sí, continuar · 2. Corregir materiales · 3. Cancelar.")
+                         f"{resumen_foto(analisis)}\n\n{revision}" if foto else revision)
     if estado == "revision_material":
         if opcion in ("2", "corregir", "corregir materiales"):
             return ofrecer_materiales(datos)

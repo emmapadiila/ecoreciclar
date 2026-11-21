@@ -37,6 +37,8 @@ ORDER BY s.id DESC;
 
 ## Probar una foto con el reconocedor de Ángel
 
+Puedes enviar una foto directamente al chat, incluso como primer mensaje. El bot resume si detectó residuos orgánicos, aprovechables o ambos. Para crear una solicitud, sigue los pasos del catálogo y confirma el material.
+
 1. Consigue el endpoint de Ángel o arranca su proyecto `Hackaton_reci` con sus dependencias y pesos instalados. En ese proyecto, con su entorno Python activado, puedes arrancar el servicio en un puerto distinto al de EcoConecta con `ECO_LOCAL_MODELS=1 python -m uvicorn api.main:app --host 0.0.0.0 --port 8100`. Usa una red de confianza accesible desde el contenedor `api`. Los requisitos y los nombres de los pesos se describen en la [guía del reconocedor](integracion-ia-residuos.md).
 2. En el `.env` de EcoConecta, define `ECO_IA_URL` con la URL completa, por ejemplo `http://IP_PRIVADA_DEL_EQUIPO:8100/api/ia/analizar-residuos`. Sustituye el nombre de ejemplo por la IP alcanzable del equipo que sirve los modelos. Aplica el cambio con `docker compose up -d --no-deps api`.
 3. Desde el chat, inicia una solicitud, selecciona reciclables y elige `1` para enviar fotografía. Adjunta una foto nítida de un material del catálogo, como una botella PET, en JPEG, PNG o WebP de hasta 5 MiB. Envíala como **foto**.
