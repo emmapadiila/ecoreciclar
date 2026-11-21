@@ -166,7 +166,8 @@ def schedule(session: Session, user: Usuario, request_id: int, when: datetime, n
     add_event(session, request, user, "programacion", fecha_real=when.isoformat(), observaciones=notes,
               recolector_id=assignment.recolector_id)
     notice = insert(Notificacion).values(usuario_id=request.usuario_id, solicitud_id=request.id, tipo="programacion",
-                                         mensaje=f"Solicitud {request.codigo} programada: {when.isoformat()}")
+                                         mensaje=(f"🗓️ *Recolección programada*\n\n🔖 *Código:* {request.codigo}\n"
+                                                  f"🕒 *Fecha y hora:* {when.astimezone(ZoneInfo('America/Bogota')):%d/%m/%Y a las %H:%M} (Barranquilla)"))
     session.execute(notice.on_conflict_do_update(
         index_elements=[Notificacion.solicitud_id, Notificacion.tipo],
         set_={"mensaje": notice.excluded.mensaje, "estado": "pendiente", "intentos": 0},
@@ -235,7 +236,8 @@ def close_collection(session: Session, user: Usuario, request_id: int, weight: D
     session.add(MovimientoPuntos(usuario_id=request.usuario_id, recoleccion_id=collection.id,
                                 regla_id=rule.id, puntos=points, concepto="Recolección confirmada"))
     session.add(Notificacion(usuario_id=request.usuario_id, solicitud_id=request.id,
-                             tipo="cierre", mensaje=f"Solicitud {request.codigo} cerrada; EcoPuntos: {points}"))
+                             tipo="cierre", mensaje=(f"✅ *Recolección completada*\n\n🔖 *Código:* {request.codigo}\n"
+                                                      f"🎁 *EcoPuntos acreditados:* {points}")))
     session.flush()
     session.refresh(request)
     return collection, points

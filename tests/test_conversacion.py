@@ -45,7 +45,9 @@ def test_registro_nuevo_habilitado_automaticamente(database, charla):
     with Session(database) as session:
         user = session.scalar(select(Usuario).where(Usuario.whatsapp_id == "DEMO-NUEVO"))
         assert user.direccion is None
-    assert "Registro básico guardado" in nuevo("confirmar registro")[1]
+    _, confirmacion = nuevo("confirmar registro")
+    assert "*¡Registro completado!*" in confirmacion and "Ana Ejemplo" in confirmacion
+    assert "1️⃣" in confirmacion and "Responde con el número" in confirmacion
     assert "Saldo acumulado" in nuevo("Consultar mis puntos")[1]
     assert nuevo("Solicitar recolección")[0] == "tipo"
     with Session(database) as session:
